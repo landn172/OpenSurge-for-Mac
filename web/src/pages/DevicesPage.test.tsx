@@ -57,6 +57,9 @@ function devicesResponse(overrides: Partial<DevicesResponse> = {}): DevicesRespo
   return { drift: false, applied: false, devices: [], desired_devices: [], applied_devices: [], changed_devices: [], leases: [], observed_devices: [], ...overrides }
 }
 
+// 主从布局下详情面板一次只渲染一台设备，所以这张卡是唯一的。
+const detailCard = () => document.querySelector('.device-card') as HTMLElement
+
 function renderPage(customOverview = overview) {
   const onChanged = vi.fn(async () => {})
   const onNavigate = vi.fn()
@@ -101,24 +104,29 @@ describe('DevicesPage', () => {
     vi.mocked(api.devicePolicy).mockResolvedValue(documentFor(policy))
     renderPage()
 
-    await screen.findByText('alice')
-    const stack = document.querySelector('.device-stack') as HTMLElement
-    expect(screen.getByRole('heading', { name: '当前 Mac 的设备设置' })).toBeTruthy()
-    expect(stack.querySelectorAll('.device-card')).toHaveLength(2)
+    await screen.findAllByText('alice')
+    const rail = screen.getByRole('navigation', { name: '设备清单' })
+    // 本机 Mac 与两台下游设备各占清单一行，状态一眼可辨
+    expect(within(rail).getByRole('button', { name: /本机 Mac/ })).toBeTruthy()
+    expect(rail.querySelectorAll('.device-item')).toHaveLength(3)
 
     const saveBar = document.querySelector('.sticky-save') as HTMLElement
     expect(saveBar.classList.contains('is-saved')).toBe(true)
     expect(saveBar.classList.contains('has-changes')).toBe(false)
-    const firstCard = stack.querySelector('.device-card') as HTMLElement
-    const secondCard = stack.querySelectorAll('.device-card')[1] as HTMLElement
-    expect(within(firstCard).getByRole('button', { name: '正在编辑此设备规则' })).toBeTruthy()
-    expect(within(secondCard).getByRole('button', { name: '编辑此设备规则' })).toBeTruthy()
-    await userEvent.click(within(firstCard).getByRole('radio', { name: /独立设备出口/ }))
+
+    // 详情面板一次只渲染选中的那台；默认是第一台
+    expect(within(detailCard()).getByText('alice')).toBeTruthy()
+    await userEvent.click(within(rail).getByRole('button', { name: /bob/ }))
+    expect(within(detailCard()).getByText('bob')).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('radio', { name: /独立设备出口/ }))
     expect(saveBar.classList.contains('has-changes')).toBe(true)
   })
 
   it('shows the local global outlet only for fixed routing and keeps the policy-page shortcut', async () => {
     const { onNavigate } = renderPage()
+    // 本机 Mac 与下游设备同在一个清单里，先选中它才看它的详情
+    await userEvent.click(await screen.findByRole('button', { name: /本机 Mac/ }))
     await screen.findByRole('heading', { name: '出口方式' })
     expect(screen.getByText('根据网站和网关规则自动分流')).toBeTruthy()
     expect(screen.queryByLabelText(/本机全局策略组/)).toBeNull()
@@ -162,15 +170,28 @@ describe('DevicesPage', () => {
       leases: [{ ip: '192.168.1.121', mac: 'aa:bb:cc:dd:ee:01', hostname: 'Ready', expires_at: '2099-01-01T00:00:00Z', online: true }],
     }))
     renderPage()
-    await screen.findByText('ready')
-    expect(screen.getByText('已应用')).toBeTruthy()
-    expect(screen.getByText('待更新')).toBeTruthy()
-    expect(screen.getByText('待应用')).toBeTruthy()
-    expect(screen.getByText('待移除')).toBeTruthy()
+    await screen.findAllByText('ready')
+    const rail = screen.getByRole('navigation', { name: '设备清单' })
+    // 四种状态在清单里同时可见，不必逐台打开
+    expect(within(rail).getByText('已应用')).toBeTruthy()
+    expect(within(rail).getByText('待更新')).toBeTruthy()
+    expect(within(rail).getByText('待应用')).toBeTruthy()
+    expect(within(rail).getByText('待移除')).toBeTruthy()
+
+    // 身份就绪度属于单台设备，选中谁看谁；ready 默认选中
     expect(screen.getByText('DHCP 身份已验证')).toBeTruthy()
-    expect(screen.getAllByText(/身份待确认/).length).toBe(2)
     expect(screen.getByLabelText('ready 独立出口 当前摘要')).toBeTruthy()
+
+    // pending 只存在于 desired，还没有 applied 身份可言
+    await userEvent.click(within(rail).getByRole('button', { name: /pending/ }))
     expect(screen.getByText('重载后应用')).toBeTruthy()
+
+    // 有 applied 但没有匹配租约的两台，各自报告身份待确认
+    await userEvent.click(within(rail).getByRole('button', { name: /updated/ }))
+    expect(screen.getByText(/身份待确认/)).toBeTruthy()
+
+    await userEvent.click(within(rail).getByRole('button', { name: /removing/ }))
+    expect(screen.getByText(/身份待确认/)).toBeTruthy()
   })
 
   it('keeps the default outlet primary, exposes rule outlets explicitly, and reports switching progress', async () => {
@@ -258,8 +279,8 @@ describe('DevicesPage', () => {
   it('defaults newly registered devices to following global rules and reveals candidates only for dedicated routing', async () => {
     renderPage()
     const follow = await screen.findByRole('radio', { name: /跟随网关/ })
-    const registration = follow.closest('.registration') as HTMLElement
-    expect(registration.classList.contains('device-tools-section')).toBe(true)
+    const registration = follow.closest('.registration-body') as HTMLElement
+    expect(registration.closest('.registration-first')).toBeTruthy()
     expect(within(registration).getByRole('heading', { name: '设备身份与路由' })).toBeTruthy()
     expect(within(registration).getByText(/确认设备名称、固定身份和路由方式/)).toBeTruthy()
     expect((follow as HTMLInputElement).checked).toBe(true)
@@ -349,12 +370,13 @@ describe('DevicesPage', () => {
     renderPage({ ...overview, topology: 'same_wifi_dhcp' } as unknown as Overview)
 
     expect(await screen.findByText('设备 ID')).toBeTruthy()
-    expect(screen.getByText('speaker')).toBeTruthy()
-    expect(screen.getByText('IPv4')).toBeTruthy()
-    expect(screen.getByText('192.168.1.137')).toBeTruthy()
-    expect(screen.getByText('MAC')).toBeTruthy()
-    expect(screen.getByText('等待 MAC')).toBeTruthy()
-    expect(screen.getByText('未登记 · 策略已暂停，补充后恢复')).toBeTruthy()
+    const paused = detailCard()
+    expect(within(paused).getByText('speaker')).toBeTruthy()
+    expect(within(paused).getByText('IPv4')).toBeTruthy()
+    expect(within(paused).getByText('192.168.1.137')).toBeTruthy()
+    expect(within(paused).getByText('MAC')).toBeTruthy()
+    expect(within(paused).getByText('等待 MAC')).toBeTruthy()
+    expect(within(paused).getByText('未登记 · 策略已暂停，补充后恢复')).toBeTruthy()
     expect(screen.queryByText('部分设备策略已暂停')).toBeNull()
     expect(screen.queryByText('DHCP 模式下策略已暂停')).toBeNull()
     expect(screen.queryByText('重载后应用')).toBeNull()
@@ -386,7 +408,7 @@ describe('DevicesPage', () => {
     renderPage({ ...overview, topology: 'same_lan' } as unknown as Overview)
 
     expect(await screen.findByText('流量与邻居已观察：MAC / IPv4 匹配')).toBeTruthy()
-    const card = screen.getByText('Pixel').closest('.device-card') as HTMLElement
+    const card = detailCard()
     expect(within(card).getByText('设备 ID')).toBeTruthy()
     expect(within(card).getByText('pixel')).toBeTruthy()
     expect(within(card).getByText('192.168.1.137')).toBeTruthy()

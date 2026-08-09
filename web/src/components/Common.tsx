@@ -1,12 +1,31 @@
-import type { ReactNode } from 'react'
+import { useContext, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { recoveryLabel } from '../recovery'
+import { ShellSlots } from './ShellSlots'
 
 export function RecoveryBanner({ recovery, onOpen }: { recovery: string; onOpen: () => void }) {
   return <div className="recovery-banner" role="alert"><span aria-hidden="true">⚠</span><div><strong>网络恢复尚未完成</strong><p>{recoveryLabel(recovery)}。网络已开始变更；请在网络设置中完成状态机，并在路由器 DHCP 恢复已验证前不要把 Mac 切回自动 DHCP。</p></div><button onClick={onOpen}>继续恢复</button></div>
 }
 
+/**
+ * The eyebrow, title and primary action are rendered into the shell's command
+ * bar so the gateway state and the page's one action stay visible while the
+ * page scrolls; the description stays in the page as its lead paragraph. Props
+ * are unchanged, so every page keeps calling this the same way.
+ *
+ * The slots are null on the first render — the shell sets them by callback ref
+ * — so the portal simply renders one commit later.
+ */
 export function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
-  return <header className="page-header"><div><small>{eyebrow}</small><h1>{title}</h1><p>{description}</p></div>{action}</header>
+  const slots = useContext(ShellSlots)
+  if (!slots) {
+    return <header className="page-header"><div><small>{eyebrow}</small><h1>{title}</h1><p>{description}</p></div>{action}</header>
+  }
+  return <>
+    {slots.title && createPortal(<><small>{eyebrow}</small><h1>{title}</h1></>, slots.title)}
+    {action && slots.action && createPortal(action, slots.action)}
+    {description && <p className="page-lead">{description}</p>}
+  </>
 }
 
 export function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) {

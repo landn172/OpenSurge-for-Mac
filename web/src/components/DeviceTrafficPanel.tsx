@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import type { DeviceTraffic, DeviceTrafficRow, TrafficHistoryPoint } from '../types'
 import { formatBytes, formatRate } from '../trafficFormat'
 import { deviceKey, gatewayLocalDeviceKey } from '../hooks/useDeviceTraffic'
 import { Empty, StatusDot } from './Common'
+import { TrafficChart } from './TrafficChart'
 import { TrafficTrendCard } from './TrafficTrendCard'
 
 type DeviceTrafficPanelProps = {
@@ -12,83 +13,92 @@ type DeviceTrafficPanelProps = {
   error: string
 }
 
-const detailTransitionMs = 460
-
+/**
+ * Rows carry their own download sparkline, so the shape of a device's traffic
+ * is visible without opening anything; expanding a row reveals the full
+ * two-direction trend inline rather than in a side panel, which keeps the
+ * detail next to the row it belongs to.
+ */
 export function DeviceTrafficPanel({ gateway, traffic, history, error }: DeviceTrafficPanelProps) {
-  const [selectedKey, setSelectedKey] = useState('')
-  const [detailOpen, setDetailOpen] = useState(false)
-  const closeTimer = useRef<number | null>(null)
+  const [openKey, setOpenKey] = useState('')
   const visibleDevices = traffic ? [traffic.gateway_local, ...traffic.devices] : []
-  const selectedDevice = visibleDevices.find(device => trafficRowKey(device) === selectedKey) ?? null
 
-  useEffect(() => () => {
-    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
-  }, [])
+  return <section className="section device-section">
+    <div className="device-section-head">
+      <div><h2>活跃设备</h2><p>实时速度来自相邻连接样本；累计值仅覆盖当前活跃会话</p></div>
+    </div>
 
-  const selectDevice = (device: DeviceTrafficRow) => {
-    const key = trafficRowKey(device)
-    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
-    if (key === selectedKey && detailOpen) {
-      setDetailOpen(false)
-      closeTimer.current = window.setTimeout(() => {
-        setSelectedKey('')
-        closeTimer.current = null
-      }, detailTransitionMs)
-      return
-    }
-    setSelectedKey(key)
-    setDetailOpen(true)
-  }
-
-  return <section className="section traffic-section">
-    <div className="traffic-section-heading"><div><h2>活跃设备</h2><p>实时速度来自相邻连接样本；累计值仅覆盖当前活跃会话</p></div>{selectedDevice && <button type="button" onClick={() => selectDevice(selectedDevice)}>{detailOpen ? '收起趋势' : '展开趋势'}</button>}</div>
     {error && !traffic ? <Empty text={`暂时无法读取设备流量：${error}`} /> : <>
       {traffic?.connection_error && <div className="notice warn">{gateway === 'running' || gateway === 'degraded' ? 'mihomo 连接数据暂时不可用；已有设备清单仍会显示。' : '网关未运行；DHCP 租约或已应用静态登记仍会显示，启动后才有活跃连接流量。'}</div>}
-      <div className={`device-traffic-layout ${detailOpen ? 'expanded' : ''}`}>
-        <div className="device-traffic-list">
-          {visibleDevices.length ? <div className="device-traffic-grid" aria-label="活跃设备流量">
-            <div className="device-traffic-grid-head">
-              <span>设备</span><span>IP</span><span>连接</span><span>↑ 当前</span><span>↓ 当前</span><span>主出口</span>
-            </div>
-            {visibleDevices.map(device => {
-              const key = trafficRowKey(device)
-              const name = deviceName(device)
-              const expanded = key === selectedKey && detailOpen
-              const local = device.identity_source === 'gateway_local'
-              const online = local ? gatewayActive(gateway) : device.online
-              return <button className={`device-traffic-row ${expanded ? 'selected' : ''}`} type="button" key={key} aria-label={`查看 ${name} ${device.ip} 流量趋势`} aria-expanded={expanded} onClick={() => selectDevice(device)}>
-                <span className="traffic-device"><StatusDot status={online ? 'running' : 'stopped'} /><span><strong>{name}</strong><small>{deviceIdentityDetail(device, gateway)}</small></span></span>
-                <span className="traffic-ip"><code>{device.ip || '—'}</code></span>
-                <span className="traffic-connections">{device.active_connections}</span>
-                <RateCell rate={device.upload_rate} total={device.upload} />
-                <RateCell rate={device.download_rate} total={device.download} />
-                <span className="traffic-egress" title={device.primary_egress}><strong>{compactEgress(device.primary_egress)}</strong><small>{device.primary_egress || '暂无出口'}</small></span>
-              </button>
-            })}
-          </div> : <Empty text={traffic ? '暂无 DHCP、静态登记或当前流量观察到的 LAN 设备' : '正在读取设备流量…'} />}
-          {traffic && <div className="traffic-summary">
-            <strong>合计 {traffic.totals.devices} 台设备接入 · {traffic.totals.active_connections} 个连接 · ↑ {formatRate(traffic.totals.upload_rate)} · ↓ {formatRate(traffic.totals.download_rate)}</strong>
-            {traffic.unidentified_device_connections > 0 && <small>其中 {traffic.unidentified_device_connections} 个待识别设备连接，仅确认了当前 LAN 源 IP。</small>}
-            {traffic.unclassified_connections > 0 && <small>另有 {traffic.unclassified_connections} 个连接无法判断来源，请在诊断中查看。</small>}
-          </div>}
-          {error && traffic && <small className="traffic-refresh-error">刷新失败：{error}</small>}
+
+      {visibleDevices.length ? <div className="device-list" aria-label="活跃设备流量">
+        <div className="device-row device-row-head">
+          <span>设备</span><span>IP</span><span className="device-numeric">连接</span><span>↑ 当前</span><span>↓ 当前</span><span>近 60 秒</span><span>主出口</span><span />
         </div>
-        <aside className="device-trend-shell" aria-hidden={!detailOpen}>
-          {selectedDevice && <TrafficTrendCard
-            title={`${deviceName(selectedDevice)} 流量趋势`}
-            subtitle={`${selectedDevice.ip} · ${selectedDevice.primary_egress || '暂无出口信息'}`}
-            history={history}
-            deviceKey={trafficRowKey(selectedDevice)}
-            className="device-trend-card"
-          />}
-        </aside>
-      </div>
+        {visibleDevices.map(device => {
+          const key = trafficRowKey(device)
+          const name = deviceName(device)
+          const expanded = key === openKey
+          const local = device.identity_source === 'gateway_local'
+          const online = local ? gatewayActive(gateway) : device.online
+          return <div className={expanded ? 'device-entry open' : 'device-entry'} key={key}>
+            <button
+              className="device-row"
+              type="button"
+              aria-label={`查看 ${name} ${device.ip} 流量趋势`}
+              aria-expanded={expanded}
+              onClick={() => setOpenKey(current => current === key ? '' : key)}
+            >
+              <span className="device-identity"><StatusDot status={online ? 'running' : 'stopped'} /><span><strong>{name}</strong><small>{deviceIdentityDetail(device, gateway)}</small></span></span>
+              <span className="device-ip"><code>{device.ip || '—'}</code></span>
+              <span className="device-numeric">{device.active_connections}</span>
+              <RateCell rate={device.upload_rate} total={device.upload} />
+              <RateCell rate={device.download_rate} total={device.download} />
+              <TrafficChart history={history} deviceKey={key} label={`${name}近 60 秒下载趋势`} spark className="device-spark" />
+              <span className="device-egress" title={device.primary_egress}><strong>{compactEgress(device.primary_egress)}</strong><small>{device.primary_egress || '暂无出口'}</small></span>
+              <span className="device-caret" aria-hidden="true">⌄</span>
+            </button>
+            {expanded && <div className="device-detail">
+              <TrafficTrendCard
+                title={`${name} 流量趋势`}
+                subtitle={`${device.ip} · ${device.primary_egress || '暂无出口信息'}`}
+                history={history}
+                deviceKey={key}
+                className="device-trend-card"
+              />
+              <dl className="device-detail-facts">
+                <div><dt>身份来源</dt><dd>{identitySourceLabel(device)}</dd></div>
+                <div><dt>MAC</dt><dd className="mono">{device.mac || 'MAC 待识别'}</dd></div>
+                <div><dt>累计上传</dt><dd>{formatBytes(device.upload)}</dd></div>
+                <div><dt>累计下载</dt><dd>{formatBytes(device.download)}</dd></div>
+              </dl>
+            </div>}
+          </div>
+        })}
+      </div> : <Empty text={traffic ? '暂无 DHCP、静态登记或当前流量观察到的 LAN 设备' : '正在读取设备流量…'} />}
+
+      {traffic && <div className="device-summary">
+        <strong>合计 {traffic.totals.devices} 台设备接入 · {traffic.totals.active_connections} 个连接 · ↑ {formatRate(traffic.totals.upload_rate)} · ↓ {formatRate(traffic.totals.download_rate)}</strong>
+        {traffic.unidentified_device_connections > 0 && <small>其中 {traffic.unidentified_device_connections} 个待识别设备连接，仅确认了当前 LAN 源 IP。</small>}
+        {traffic.unclassified_connections > 0 && <small>另有 {traffic.unclassified_connections} 个连接无法判断来源，请在诊断中查看。</small>}
+      </div>}
+      {error && traffic && <small className="device-refresh-error">刷新失败：{error}</small>}
     </>}
   </section>
 }
 
 function RateCell({ rate = 0, total = 0 }: { rate?: number; total?: number }) {
-  return <span className="traffic-rate"><strong>{formatRate(rate)}</strong><small>累计 {formatBytes(total)}</small></span>
+  return <span className="device-rate"><strong>{formatRate(rate)}</strong><small>累计 {formatBytes(total)}</small></span>
+}
+
+function identitySourceLabel(device: DeviceTrafficRow) {
+  switch (device.identity_source) {
+  case 'gateway_local': return '网关本机'
+  case 'dhcp_lease': return 'DHCP 已验证'
+  case 'registered_static': return '静态登记'
+  case 'observed_traffic': return '流量已观察'
+  default: return '身份来源未标记'
+  }
 }
 
 function deviceName(device: DeviceTrafficRow) {
@@ -102,13 +112,7 @@ function deviceName(device: DeviceTrafficRow) {
 
 function deviceIdentityDetail(device: DeviceTrafficRow, gateway?: string) {
   if (device.identity_source === 'gateway_local') return gatewayLocalDetail(device, gateway)
-  const source = device.identity_source === 'dhcp_lease'
-    ? 'DHCP 已验证'
-    : device.identity_source === 'registered_static'
-      ? '静态登记'
-      : device.identity_source === 'observed_traffic'
-        ? '流量已观察'
-        : '身份来源未标记'
+  const source = identitySourceLabel(device)
   return device.mac ? `${source} · ${device.mac}` : `${source} · MAC 待识别`
 }
 

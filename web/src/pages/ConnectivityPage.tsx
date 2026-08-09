@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, waitForOperation } from '../api'
 import { ConnectivityCategory } from '../components/ConnectivityCategory'
+import { ConnectivityTargetCard } from '../components/ConnectivityTargetCard'
 import { Empty, PageHeader } from '../components/Common'
 import { connectivityCategories, median } from '../connectivity'
-import type { ConnectivityResponse, ConnectivityResult, Overview } from '../types'
+import type { ConnectivityResponse, ConnectivityResult, ConnectivityTarget, Overview } from '../types'
 
 const baselineKey = 'opensurge-connectivity-baseline'
 
@@ -64,6 +65,11 @@ export function ConnectivityPage({ overview, onChanged }: { overview: Overview |
   const mismatches = enforceBaseline ? tested.filter(result => result.route_match === false).length : 0
   const overallMedian = median(tested.map(result => result.median_ms ?? 0).filter(Boolean))
   const categories = useMemo(() => Object.keys(connectivityCategories) as Array<keyof typeof connectivityCategories>, [])
+  const attention = useMemo(
+    () => targets.filter(target => needsAttention(target, results.get(target.id), enforceBaseline)),
+    [targets, results, enforceBaseline],
+  )
+  const attentionIDs = useMemo(() => new Set(attention.map(target => target.id)), [attention])
 
   const setBaseline = (enabled: boolean) => {
     setEnforceBaseline(enabled)
@@ -94,10 +100,40 @@ export function ConnectivityPage({ overview, onChanged }: { overview: Overview |
     {mihomoRecoveryNeeded && <div className="notice actionable" role="status"><div><strong>Mihomo 本地服务需要恢复</strong><p>Mac 睡眠唤醒或 Wi-Fi 重连后，若进程已停止或本地 controller 拒绝连接，可重建 TUN 与出站 socket；不会停止 DHCP/DNS、卸载 PF 或修改 Mac 网络设置，旧 Mihomo 日志会先归档。</p></div><button className="primary" type="button" disabled={recovering || testing.size > 0} onClick={() => void recoverMihomo()}>{recovering ? '正在恢复…' : '恢复 Mihomo'}</button></div>}
     {error && <div className="error-banner" role="alert"><span>!</span><p>{error}</p><button type="button" onClick={() => void loadCatalog()}>重试</button></div>}
     <section className="connectivity-overview"><div className="connectivity-score"><span className={`score-orb ${tested.length ? mismatches || reachable < tested.length ? 'mixed' : 'healthy' : ''}`}><strong>{tested.length ? `${reachable}/${tested.length}` : '—'}</strong><small>可达</small></span><div><small>APPLIED ROUTING</small><h2>{tested.length ? mismatches ? `${mismatches} 项路径需要关注` : '当前分流符合所选基线' : '等待首次检测'}</h2><p>{tested.length ? `三轮探测 · 整体中位 ${overallMedian || '—'} ms` : '不会在打开页面时自动访问第三方服务'}</p></div></div><div className="connectivity-metrics"><span><small>已检测</small><strong>{tested.length}</strong></span><span><small>路径不符</small><strong className={mismatches ? 'attention' : ''}>{mismatches}</strong></span><span><small>中位延迟</small><strong>{overallMedian ? `${overallMedian} ms` : '—'}</strong></span></div><div className="baseline-control"><span><strong>分流判断基线</strong><small>只影响界面判断，不修改 mihomo 配置</small></span><div className="segmented"><button type="button" aria-pressed={enforceBaseline} onClick={() => setBaseline(true)}>国内直连 / 海外代理</button><button type="button" aria-pressed={!enforceBaseline} onClick={() => setBaseline(false)}>仅观察</button></div></div></section>
+    {/* A target that failed or took an unexpected route is lifted out of its
+        category and listed once, at the top. Duplicating it in both places
+        would make the same problem read as two. */}
+    {attention.length > 0 && <section className="connectivity-attention" aria-label="需要关注">
+      <header className="connectivity-category-head attention">
+        <span className="category-mark" aria-hidden="true">!</span>
+        <div><h2>需要关注</h2><p>实际出口与所选基线不一致，或者根本没有连上</p></div>
+        <div className="category-summary">
+          <span>{attentionSummary(attention, results, enforceBaseline)}</span>
+          <button type="button" disabled={attention.some(target => testing.has(target.id))} onClick={() => void run(attention.map(target => target.id))}>重新检测</button>
+        </div>
+      </header>
+      <div className="connectivity-list">{attention.map(target => <ConnectivityTargetCard key={target.id} target={target} result={results.get(target.id)} testing={testing.has(target.id)} enforceBaseline={enforceBaseline} />)}</div>
+    </section>}
+
     {targets.length ? categories.map(category => {
       const items = targets.filter(target => target.category === category)
-      return items.length ? <ConnectivityCategory key={category} category={category} targets={items} results={results} testing={testing} enforceBaseline={enforceBaseline} onTest={run} /> : null
+      const visible = items.filter(target => !attentionIDs.has(target.id))
+      return items.length ? <ConnectivityCategory key={category} category={category} targets={items} visible={visible} results={results} testing={testing} enforceBaseline={enforceBaseline} onTest={run} /> : null
     }) : !error && <Empty text="正在加载检测目录…" />}
     <p className="evidence-note"><strong>证据范围：</strong>这里的请求由 Mac 上的 Control Service 经 mihomo mixed-port 发起，会经过当前 Mac 本机规则 / 全局 / 直连模式。它不证明下游设备的网关规则、设备级 SRC-IP、DHCP、DNS 或 TUN；选择全局或直连时，分流判断基线出现差异可能正是当前模式的结果。HTTP 响应表示网络可达，不等同于已登录后的完整产品功能可用。</p>
   </>
+}
+
+function needsAttention(target: ConnectivityTarget, result: ConnectivityResult | undefined, enforceBaseline: boolean) {
+  if (!result) return false
+  if (result.status !== 'reachable' && result.status !== 'degraded') return true
+  if (!enforceBaseline || target.expected_route === 'any') return false
+  return result.route !== 'unknown' && result.route !== target.expected_route
+}
+
+function attentionSummary(targets: ConnectivityTarget[], results: Map<string, ConnectivityResult>, enforceBaseline: boolean) {
+  const entries = targets.map(target => results.get(target.id)).filter((result): result is ConnectivityResult => Boolean(result))
+  const failed = entries.filter(result => result.status !== 'reachable' && result.status !== 'degraded').length
+  const mismatched = enforceBaseline ? entries.length - failed : 0
+  return [mismatched ? `${mismatched} 项路径不符` : '', failed ? `${failed} 项不可达` : ''].filter(Boolean).join(' · ')
 }

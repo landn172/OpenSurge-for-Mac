@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, authenticationRequiredEvent, RequestError } from './api'
 import { PageErrorBoundary } from './components/PageErrorBoundary'
 import { RecoveryBanner, StatusDot } from './components/Common'
+import { RailIcon, RailIconSprite } from './components/RailIcons'
+import { ShellSlots } from './components/ShellSlots'
 import { DashboardPage } from './pages/DashboardPage'
 import { ConnectivityPage } from './pages/ConnectivityPage'
 import { DevicesPage } from './pages/DevicesPage'
@@ -17,15 +19,24 @@ type Page = 'dashboard' | 'network' | 'sources' | 'devices' | 'policies' | 'conn
 type Theme = 'dark' | 'light'
 type NetworkNavigationTarget = 'none' | 'control' | 'bottom'
 
-const nav = [
-  { id: 'dashboard', label: '总览', icon: '◈' },
-  { id: 'network', label: '网络设置', icon: '⌁' },
-  { id: 'sources', label: '代理与规则源', icon: '◎' },
-  { id: 'devices', label: '设备', icon: '▣' },
-  { id: 'policies', label: '策略', icon: '⇄' },
-  { id: 'connectivity', label: '连通性', icon: '◌' },
-  { id: 'diagnostics', label: '诊断', icon: '⌘' },
-] as const satisfies ReadonlyArray<{ id: Page; label: string; icon: string }>
+// Two groups rather than one flat list of seven: watching the gateway and
+// changing it are different tasks, and the separator keeps that readable even
+// when only the icons are visible.
+const navGroups = [
+  [
+    { id: 'dashboard', label: '总览', icon: 'dashboard' },
+    { id: 'connectivity', label: '连通性', icon: 'connectivity' },
+    { id: 'diagnostics', label: '诊断', icon: 'diagnostics' },
+  ],
+  [
+    { id: 'network', label: '网络设置', icon: 'network' },
+    { id: 'sources', label: '代理与规则源', icon: 'sources' },
+    { id: 'devices', label: '设备', icon: 'devices' },
+    { id: 'policies', label: '策略', icon: 'policies' },
+  ],
+] as const satisfies ReadonlyArray<ReadonlyArray<{ id: Page; label: string; icon: string }>>
+
+const nav = navGroups.flat()
 
 function currentPage(): Page {
   const candidate = window.location.pathname.split('/').filter(Boolean)[0] as Page | undefined
@@ -36,20 +47,6 @@ function initialTheme(): Theme {
   const stored = window.localStorage.getItem('opensurge-theme')
   if (stored === 'dark' || stored === 'light') return stored
   return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
-}
-
-const railLayoutQuery = '(max-width: 1150px)'
-
-function storedRailPreference(): boolean {
-  return window.localStorage.getItem('opensurge-sidebar-rail') === 'true'
-}
-
-function narrowLayout(): boolean {
-  return typeof window.matchMedia === 'function' && window.matchMedia(railLayoutQuery).matches === true
-}
-
-function initialRail(): boolean {
-  return narrowLayout() || storedRailPreference()
 }
 
 function focusGatewayControl(target: Exclude<NetworkNavigationTarget, 'none'>) {
@@ -76,32 +73,22 @@ export function App() {
   const [error, setError] = useState('')
   const [authenticationRequired, setAuthenticationRequired] = useState(false)
   const [theme, setTheme] = useState<Theme>(initialTheme)
-  const [rail, setRail] = useState<boolean>(initialRail)
   const [devicesDirty, setDevicesDirty] = useState(false)
+  // Command-bar slots. Callback refs rather than useRef so the first commit
+  // that mounts them re-renders the pages holding the portals.
+  const [titleSlot, setTitleSlot] = useState<HTMLElement | null>(null)
+  const [actionSlot, setActionSlot] = useState<HTMLElement | null>(null)
   const pageRef = useRef(page)
   const devicesDirtyRef = useRef(devicesDirty)
   pageRef.current = page
   devicesDirtyRef.current = devicesDirty
 
+  const slots = useMemo(() => ({ title: titleSlot, action: actionSlot }), [titleSlot, actionSlot])
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     window.localStorage.setItem('opensurge-theme', theme)
   }, [theme])
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const query = window.matchMedia(railLayoutQuery)
-    const sync = () => setRail(query.matches === true || storedRailPreference())
-    query.addEventListener?.('change', sync)
-    return () => query.removeEventListener?.('change', sync)
-  }, [])
-
-  // Only persist at desktop width, so the stored key always means "偏好" rather than
-  // "曾经手动撤销过窄屏自动收起"; narrow-window toggles stay session-only.
-  const toggleRail = () => setRail(current => {
-    if (!narrowLayout()) window.localStorage.setItem('opensurge-sidebar-rail', String(!current))
-    return !current
-  })
 
   const refresh = useCallback(async () => {
     try {
@@ -163,30 +150,66 @@ export function App() {
     setPage(next)
   }
 
-  return <div className={rail ? 'app-shell rail' : 'app-shell'}>
-    <aside className="sidebar">
-      <div className="brand"><img className="brand-mark" src="/opensurge-icon.png" alt="" aria-hidden="true" /><div><strong>OpenSurge</strong><small>for Mac</small></div></div>
-      <nav aria-label="OpenSurge sections">
-        {nav.map(item => <button key={item.id} className={page === item.id ? 'active' : ''} title={rail ? item.label : undefined} onClick={() => go(item.id)}><span aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>)}
+  return <ShellSlots.Provider value={slots}>
+    <div className="app-shell">
+      <RailIconSprite />
+      <nav className="rail" aria-label="OpenSurge sections">
+        <img className="rail-mark" src="/opensurge-icon.png" alt="" aria-hidden="true" />
+        {navGroups.map((group, index) => <div className="rail-group" key={group[0].id}>
+          {index > 0 && <span className="rail-sep" aria-hidden="true" />}
+          {group.map(item => <button
+            key={item.id}
+            type="button"
+            className={page === item.id ? 'rail-item active' : 'rail-item'}
+            aria-label={item.label}
+            aria-current={page === item.id ? 'page' : undefined}
+            onClick={() => go(item.id)}
+          >
+            <RailIcon name={item.icon} />
+            <span className="rail-tip" aria-hidden="true">{item.label}</span>
+          </button>)}
+        </div>)}
+        <div className="rail-foot">
+          <button
+            type="button"
+            className="rail-item"
+            aria-pressed={theme === 'light'}
+            aria-label={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'}
+            onClick={() => setTheme(current => current === 'dark' ? 'light' : 'dark')}
+          >
+            <RailIcon name="theme" />
+            <span className="rail-tip" aria-hidden="true">{theme === 'dark' ? '浅色模式' : '深色模式'}</span>
+          </button>
+        </div>
       </nav>
-      <button type="button" className="theme-toggle" aria-pressed={theme === 'light'} title={rail ? (theme === 'dark' ? '浅色模式' : '深色模式') : undefined} aria-label={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'} onClick={() => setTheme(current => current === 'dark' ? 'light' : 'dark')}><span aria-hidden="true">{theme === 'dark' ? '☀' : '◐'}</span><span>{theme === 'dark' ? '浅色模式' : '深色模式'}</span></button>
-      <button type="button" className="sidebar-collapse" aria-expanded={!rail} aria-label={rail ? '展开侧边栏' : '收起侧边栏'} title={rail ? '展开侧边栏' : '收起侧边栏'} onClick={toggleRail}><i aria-hidden="true">‹</i><span>收起侧边栏</span></button>
-      <div className="sidebar-status"><StatusDot status={overview?.status.gateway ?? 'unreachable'} /><div><strong>{statusLabel(overview?.status.gateway, overview?.status.runtime_state)}</strong><small>{overview?.status.lan_ip || 'Control API'}</small></div></div>
-    </aside>
-    <main className="workspace">
-      {authenticationRequired ? <section className="session-expired" role="alert"><span aria-hidden="true">!</span><div><h1>Web GUI 与 OpenSurge 的安全连接已过期</h1><p>请点击 macOS 菜单栏中的 OpenSurge 图标，然后选择“打开 OpenSurge 面板”。</p></div></section> : <>
-        {overview?.recovery.required && needsNetworkRecoveryWarning(overview.recovery.stage) && <RecoveryBanner recovery={overview.recovery.stage} onOpen={() => go('network', 'control')} />}
-        {error && <div className="error-banner" role="alert"><span>!</span><p>{error}</p><button onClick={() => void refresh()}>重试</button></div>}
-        <PageErrorBoundary key={page}>
-          {page === 'dashboard' && <DashboardPage overview={overview} onOpenNetwork={action => go('network', action === 'cleanup' ? 'control' : action === 'stop' ? 'bottom' : 'none')} />}
-          {page === 'network' && <NetworkPage overview={overview} onChanged={refresh} onNavigate={() => go('devices')} />}
-          {page === 'sources' && <SourcesPage overview={overview} onChanged={refresh} />}
-          {page === 'devices' && <DevicesPage overview={overview} onChanged={refresh} onNavigate={go} onDirtyChange={setDevicesDirty} />}
-          {page === 'policies' && <PoliciesPage overview={overview} onChanged={refresh} />}
-          {page === 'connectivity' && <ConnectivityPage overview={overview} onChanged={refresh} />}
-          {page === 'diagnostics' && <DiagnosticsPage overview={overview} />}
-        </PageErrorBoundary>
-      </>}
-    </main>
-  </div>
+
+      <div className="stage">
+        <header className="cmdbar">
+          <div className="cmd-title" ref={setTitleSlot} />
+          <div className="status-chip">
+            <StatusDot status={overview?.status.gateway ?? 'unreachable'} />
+            <strong>{statusLabel(overview?.status.gateway, overview?.status.runtime_state)}</strong>
+            <code>{overview?.status.lan_ip || 'Control API'}</code>
+          </div>
+          <div className="cmd-action" ref={setActionSlot} />
+        </header>
+
+        <main className="workspace">
+          {authenticationRequired ? <section className="session-expired" role="alert"><span aria-hidden="true">!</span><div><h1>Web GUI 与 OpenSurge 的安全连接已过期</h1><p>请点击 macOS 菜单栏中的 OpenSurge 图标，然后选择“打开 OpenSurge 面板”。</p></div></section> : <>
+            {overview?.recovery.required && needsNetworkRecoveryWarning(overview.recovery.stage) && <RecoveryBanner recovery={overview.recovery.stage} onOpen={() => go('network', 'control')} />}
+            {error && <div className="error-banner" role="alert"><span>!</span><p>{error}</p><button onClick={() => void refresh()}>重试</button></div>}
+            <PageErrorBoundary key={page}>
+              {page === 'dashboard' && <DashboardPage overview={overview} onOpenNetwork={action => go('network', action === 'cleanup' ? 'control' : action === 'stop' ? 'bottom' : 'none')} />}
+              {page === 'network' && <NetworkPage overview={overview} onChanged={refresh} onNavigate={() => go('devices')} />}
+              {page === 'sources' && <SourcesPage overview={overview} onChanged={refresh} />}
+              {page === 'devices' && <DevicesPage overview={overview} onChanged={refresh} onNavigate={go} onDirtyChange={setDevicesDirty} />}
+              {page === 'policies' && <PoliciesPage overview={overview} onChanged={refresh} />}
+              {page === 'connectivity' && <ConnectivityPage overview={overview} onChanged={refresh} />}
+              {page === 'diagnostics' && <DiagnosticsPage overview={overview} />}
+            </PageErrorBoundary>
+          </>}
+        </main>
+      </div>
+    </div>
+  </ShellSlots.Provider>
 }

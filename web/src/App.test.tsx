@@ -171,14 +171,14 @@ describe('OpenSurge app shell', () => {
 
   it('does not present a saved recovery card as an unfinished network recovery', async () => {
     render(<App />)
-    const brandIcon = document.querySelector<HTMLImageElement>('img.brand-mark')
+    const brandIcon = document.querySelector<HTMLImageElement>('img.rail-mark')
     expect(brandIcon?.getAttribute('src')).toBe('/opensurge-icon.png')
     expect(await screen.findByRole('heading', { name: '全屋网关，一眼可见' })).toBeTruthy()
     const gateway = screen.getByRole('article', { name: '网关状态' })
     expect(within(gateway).getByText('en0 · 192.168.1.20')).toBeTruthy()
     expect(within(gateway).getByText('接管模式')).toBeTruthy()
     expect(within(gateway).getByText('配置状态')).toBeTruthy()
-    expect(screen.getByRole('img', { name: '上传最近 60 秒趋势' }).querySelector('.rate-line')?.getAttribute('d')).toContain(' C ')
+    expect(screen.getByRole('img', { name: '网关最近 60 秒上传下载趋势' }).querySelector('.trend-line.upload')?.getAttribute('d')).toContain(' C ')
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByRole('button', { name: '启动网关' }).hasAttribute('disabled')).toBe(false)
   })
