@@ -49,7 +49,9 @@ if grep -Fq 'ProgressView' "$MENU_CONTENT"; then
   echo "background menu bar polling must not show a periodic loading spinner" >&2
   exit 1
 fi
-grep -Fq 'Button(model.isUninstalling ? "正在卸载…" : "卸载 OpenSurge…")' "$MENU_CONTENT" || {
+# Asserts the entry and its in-progress title, not the widget type: the panel
+# renders menu rows rather than SwiftUI buttons.
+grep -Fq 'model.isUninstalling ? "正在卸载…" : "卸载 OpenSurge…"' "$MENU_CONTENT" || {
   echo "menu bar must expose the native OpenSurge uninstall entry" >&2
   exit 1
 }

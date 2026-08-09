@@ -28,11 +28,13 @@ private enum OpenSurgeMenuBarIconAsset {
 }
 
 struct OpenSurgeAppIconView: View {
+    var size: CGFloat = 34
+
     var body: some View {
         Image(nsImage: OpenSurgeAppIconAsset.image)
             .resizable()
             .interpolation(.high)
-            .frame(width: 34, height: 34)
+            .frame(width: size, height: size)
     }
 }
 

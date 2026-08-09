@@ -53,8 +53,16 @@ func menuBarPanelPresentationAction(
     return .complete
 }
 
+// The panel hosts AppKit submenus (详细状态), which live in their own window.
+// Under `.transient` AppKit reads a click in that window as a click outside the
+// popover and tears the panel down mid-interaction — and whether mutating
+// `behavior` on an already-shown popover retracts that monitor is undocumented.
+// So the panel owns dismissal in *both* activation states, via the monitors
+// below, which are suspended for as long as a submenu is tracking. The
+// parameter is kept to pin the fact that activation state deliberately no
+// longer changes the answer.
 func menuBarPopoverBehavior(applicationActive: Bool) -> NSPopover.Behavior {
-    applicationActive ? .transient : .applicationDefined
+    .applicationDefined
 }
 
 func menuBarStatusItemNeedsRefresh(
@@ -114,6 +122,8 @@ final class MenuBarController: NSObject, MenuBarPresenting {
     private var outsideClickMonitor: Any?
     private var escapeKeyMonitor: Any?
     private var finalPresentationVerificationScheduled = false
+    private var flyoutObservers: [NSObjectProtocol] = []
+    private var flyoutTracking = false
 
     init(model: StatusModel) {
         self.model = model
@@ -139,6 +149,57 @@ final class MenuBarController: NSObject, MenuBarPresenting {
                 self?.updateStatusItem()
             }
         }
+        installFlyoutObservers()
+    }
+
+    deinit {
+        for observer in flyoutObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    // A submenu opened from a panel row lives in its own window. Under
+    // `.transient` AppKit reads a click there as a click outside the popover and
+    // tears the panel down, so dismissal is suspended for as long as the
+    // submenu is tracking.
+    //
+    // `queue: nil` is deliberate — it delivers synchronously on the posting
+    // thread, so suspension is in place before `popUp` starts tracking. Passing
+    // `.main` here would enqueue the block instead and reopen the very gap this
+    // closes. The only poster is a main-thread SwiftUI action, which is what
+    // makes `assumeIsolated` sound.
+    private func installFlyoutObservers() {
+        let center = NotificationCenter.default
+        flyoutObservers = [
+            center.addObserver(
+                forName: .openSurgeFlyoutWillOpen,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.beginFlyoutTracking() }
+            },
+            center.addObserver(
+                forName: .openSurgeFlyoutDidClose,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.endFlyoutTracking() }
+            },
+        ]
+    }
+
+    private func beginFlyoutTracking() {
+        guard !flyoutTracking else { return }
+        flyoutTracking = true
+        popover.behavior = .applicationDefined
+        removeApplicationDefinedDismissMonitors()
+    }
+
+    private func endFlyoutTracking() {
+        guard flyoutTracking else { return }
+        flyoutTracking = false
+        guard popover.isShown else { return }
+        preparePopoverForCurrentActivationState()
     }
 
     func showPanel() {
@@ -261,14 +322,11 @@ final class MenuBarController: NSObject, MenuBarPresenting {
     }
 
     private func preparePopoverForCurrentActivationState() {
+        guard !flyoutTracking else { return }
         popover.behavior = menuBarPopoverBehavior(
             applicationActive: NSApplication.shared.isActive
         )
-        if popover.behavior == .transient {
-            removeApplicationDefinedDismissMonitors()
-        } else {
-            installApplicationDefinedDismissMonitors()
-        }
+        installApplicationDefinedDismissMonitors()
     }
 
     private func installApplicationDefinedDismissMonitors() {
@@ -284,8 +342,18 @@ final class MenuBarController: NSObject, MenuBarPresenting {
         if escapeKeyMonitor == nil {
             escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
                 [weak self] event in
-                guard event.keyCode == 53 else { return event }
-                self?.closePanel()
+                // These monitors are now armed whenever the panel is up, so
+                // Escape must only be swallowed when the panel is the thing it
+                // should close. A quit or uninstall confirmation owns Escape
+                // while it is modal, and a closed panel has no business
+                // consuming the key at all.
+                guard event.keyCode == 53,
+                      let self,
+                      self.popover.isShown,
+                      NSApplication.shared.modalWindow == nil else {
+                    return event
+                }
+                self.closePanel()
                 return nil
             }
         }
@@ -303,13 +371,15 @@ final class MenuBarController: NSObject, MenuBarPresenting {
     }
 
     private func promoteVisiblePanelForActiveApplication() {
-        guard NSApplication.shared.isActive,
+        guard !flyoutTracking,
+              NSApplication.shared.isActive,
               let panelWindow = popover.contentViewController?.view.window else {
             return
         }
         panelWindow.makeKey()
-        popover.behavior = .transient
-        removeApplicationDefinedDismissMonitors()
+        // Activation no longer hands dismissal back to AppKit; the monitors stay
+        // armed so a submenu click can never be mistaken for a click outside.
+        installApplicationDefinedDismissMonitors()
     }
 
     private func schedulePresentationRetry(notBefore: Date? = nil) {

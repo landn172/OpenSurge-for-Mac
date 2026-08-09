@@ -253,8 +253,8 @@ struct MenuBarChecks {
         )
         try require(
             menuBarPopoverBehavior(applicationActive: false) == .applicationDefined
-                && menuBarPopoverBehavior(applicationActive: true) == .transient,
-            "an inactive app must own popover dismissal until activation succeeds"
+                && menuBarPopoverBehavior(applicationActive: true) == .applicationDefined,
+            "the panel must own popover dismissal in both activation states, so a click in an AppKit submenu window cannot be mistaken for a click outside the panel"
         )
         try require(
             !menuBarStatusItemNeedsRefresh(
