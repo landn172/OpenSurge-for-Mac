@@ -37,6 +37,20 @@ function initialTheme(): Theme {
   return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
 }
 
+const railLayoutQuery = '(max-width: 1150px)'
+
+function storedRailPreference(): boolean {
+  return window.localStorage.getItem('opensurge-sidebar-rail') === 'true'
+}
+
+function narrowLayout(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(railLayoutQuery).matches === true
+}
+
+function initialRail(): boolean {
+  return narrowLayout() || storedRailPreference()
+}
+
 function focusGatewayControl(target: Exclude<NetworkNavigationTarget, 'none'>) {
   const control = document.getElementById('gateway-control')
   if (!(control instanceof HTMLButtonElement)) return
@@ -61,6 +75,7 @@ export function App() {
   const [error, setError] = useState('')
   const [authenticationRequired, setAuthenticationRequired] = useState(false)
   const [theme, setTheme] = useState<Theme>(initialTheme)
+  const [rail, setRail] = useState<boolean>(initialRail)
   const [devicesDirty, setDevicesDirty] = useState(false)
   const pageRef = useRef(page)
   const devicesDirtyRef = useRef(devicesDirty)
@@ -71,6 +86,21 @@ export function App() {
     document.documentElement.dataset.theme = theme
     window.localStorage.setItem('opensurge-theme', theme)
   }, [theme])
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia(railLayoutQuery)
+    const sync = () => setRail(query.matches === true || storedRailPreference())
+    query.addEventListener?.('change', sync)
+    return () => query.removeEventListener?.('change', sync)
+  }, [])
+
+  // Only persist at desktop width, so the stored key always means "偏好" rather than
+  // "曾经手动撤销过窄屏自动收起"; narrow-window toggles stay session-only.
+  const toggleRail = () => setRail(current => {
+    if (!narrowLayout()) window.localStorage.setItem('opensurge-sidebar-rail', String(!current))
+    return !current
+  })
 
   const refresh = useCallback(async () => {
     try {
@@ -132,13 +162,14 @@ export function App() {
     setPage(next)
   }
 
-  return <div className="app-shell">
+  return <div className={rail ? 'app-shell rail' : 'app-shell'}>
     <aside className="sidebar">
       <div className="brand"><img className="brand-mark" src="/opensurge-icon.png" alt="" aria-hidden="true" /><div><strong>OpenSurge</strong><small>for Mac</small></div></div>
       <nav aria-label="OpenSurge sections">
-        {nav.map(item => <button key={item.id} className={page === item.id ? 'active' : ''} onClick={() => go(item.id)}><span aria-hidden="true">{item.icon}</span>{item.label}</button>)}
+        {nav.map(item => <button key={item.id} className={page === item.id ? 'active' : ''} title={rail ? item.label : undefined} onClick={() => go(item.id)}><span aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>)}
       </nav>
-      <button type="button" className="theme-toggle" aria-pressed={theme === 'light'} aria-label={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'} onClick={() => setTheme(current => current === 'dark' ? 'light' : 'dark')}><span aria-hidden="true">{theme === 'dark' ? '☀' : '◐'}</span>{theme === 'dark' ? '浅色模式' : '深色模式'}</button>
+      <button type="button" className="theme-toggle" aria-pressed={theme === 'light'} title={rail ? (theme === 'dark' ? '浅色模式' : '深色模式') : undefined} aria-label={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'} onClick={() => setTheme(current => current === 'dark' ? 'light' : 'dark')}><span aria-hidden="true">{theme === 'dark' ? '☀' : '◐'}</span><span>{theme === 'dark' ? '浅色模式' : '深色模式'}</span></button>
+      <button type="button" className="sidebar-collapse" aria-expanded={!rail} aria-label={rail ? '展开侧边栏' : '收起侧边栏'} title={rail ? '展开侧边栏' : '收起侧边栏'} onClick={toggleRail}><i aria-hidden="true">‹</i><span>收起侧边栏</span></button>
       <div className="sidebar-status"><StatusDot status={overview?.status.gateway ?? 'unreachable'} /><div><strong>{statusLabel(overview?.status.gateway, overview?.status.runtime_state)}</strong><small>{overview?.status.lan_ip || 'Control API'}</small></div></div>
     </aside>
     <main className="workspace">

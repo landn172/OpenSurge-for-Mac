@@ -378,11 +378,35 @@ type StateEvent struct {
 }
 
 type DiagnosticsResponse struct {
-	SchemaVersion   int                        `json:"schema_version"`
-	Revision        string                     `json:"revision"`
-	Connections     mihomo.ConnectionsSnapshot `json:"connections"`
-	ConnectionError string                     `json:"connection_error,omitempty"`
-	Logs            map[string][]string        `json:"logs"`
-	Operations      []Operation                `json:"operations"`
-	Recovery        RecoveryState              `json:"recovery"`
+	SchemaVersion   int                    `json:"schema_version"`
+	Revision        string                 `json:"revision"`
+	Connections     DiagnosticsConnections `json:"connections"`
+	ConnectionError string                 `json:"connection_error,omitempty"`
+	Logs            map[string][]string    `json:"logs"`
+	Operations      []Operation            `json:"operations"`
+	Recovery        RecoveryState          `json:"recovery"`
+}
+
+// The diagnostics table polls while it is open and mihomo can hold thousands of
+// connections, so ship a bounded, traffic-ordered window. Total stays the real
+// count: the UI reports how many rows were left out, which a truncated slice
+// length alone would misreport as the whole set.
+type DiagnosticsConnections struct {
+	UploadTotal   int64                   `json:"upload_total"`
+	DownloadTotal int64                   `json:"download_total"`
+	Total         int                     `json:"total"`
+	Connections   []DiagnosticsConnection `json:"connections"`
+}
+
+// mihomo attaches ~25 metadata fields per connection and the table reads four of
+// them. Projecting here rather than in mihomo.FetchConnections keeps device
+// traffic aggregation, which needs sourceIP and friends, on the full payload.
+type DiagnosticsConnection struct {
+	ID       string   `json:"id"`
+	Upload   int64    `json:"upload"`
+	Download int64    `json:"download"`
+	Rule     string   `json:"rule,omitempty"`
+	Chains   []string `json:"chains,omitempty"`
+	Host     string   `json:"host,omitempty"`
+	Port     string   `json:"port,omitempty"`
 }

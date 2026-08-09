@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1725,21 +1727,103 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 	paths := runtime.NewPaths(cfg)
 	connections, connectionErr := s.fetchConnections(r.Context(), cfg)
-	if connections.Connections == nil {
-		connections.Connections = []mihomo.Connection{}
-	}
 	logs := map[string][]string{
 		"mihomo":  tailLines(paths.MihomoLog, 80, cfg),
 		"dnsmasq": tailLines(paths.DNSMasqLog, 80, cfg),
 	}
 	operations, _ := s.store.Operations(20)
 	recovery, _ := s.store.Recovery()
-	writeJSON(w, http.StatusOK, DiagnosticsResponse{SchemaVersion: SchemaVersion, Revision: fileDigest(s.configPath), Connections: connections, ConnectionError: errorString(connectionErr), Logs: logs, Operations: operations, Recovery: recovery})
+	writeJSON(w, http.StatusOK, DiagnosticsResponse{SchemaVersion: SchemaVersion, Revision: fileDigest(s.configPath), Connections: diagnosticsConnectionsFrom(connections), ConnectionError: errorString(connectionErr), Logs: logs, Operations: operations, Recovery: recovery})
 }
 
+// Kept above the table's own display limit so the UI still has a margin to say
+// how many rows it dropped, without putting the full connection list on the wire
+// every poll.
+const diagnosticsConnectionLimit = 200
+
+func diagnosticsConnectionsFrom(snapshot mihomo.ConnectionsSnapshot) DiagnosticsConnections {
+	// Truncating mihomo's own ordering would drop rows arbitrarily. Rank by bytes
+	// accumulated since the connection opened — the same figures the table shows
+	// in its upload/download columns, so the ordering is visible to the reader.
+	// Deliberately not a current rate: that needs per-connection sampling and
+	// would order rows by a number the table never displays.
+	ordered := make([]mihomo.Connection, len(snapshot.Connections))
+	copy(ordered, snapshot.Connections)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].Upload+ordered[i].Download > ordered[j].Upload+ordered[j].Download
+	})
+	if len(ordered) > diagnosticsConnectionLimit {
+		ordered = ordered[:diagnosticsConnectionLimit]
+	}
+	connections := make([]DiagnosticsConnection, 0, len(ordered))
+	for _, connection := range ordered {
+		connections = append(connections, DiagnosticsConnection{
+			ID:       connection.ID,
+			Upload:   connection.Upload,
+			Download: connection.Download,
+			Rule:     connection.Rule,
+			Chains:   connection.Chains,
+			Host:     connectionMetadataString(connection.Metadata, "host", "sniffHost", "destinationIP"),
+			Port:     connectionMetadataString(connection.Metadata, "destinationPort"),
+		})
+	}
+	return DiagnosticsConnections{
+		UploadTotal:   snapshot.UploadTotal,
+		DownloadTotal: snapshot.DownloadTotal,
+		Total:         len(snapshot.Connections),
+		Connections:   connections,
+	}
+}
+
+// mihomo reports ports as strings, but numeric values show up in some builds and
+// through JSON round-trips, so accept both rather than silently dropping the
+// ":port" half of a target.
+func connectionMetadataString(metadata map[string]any, keys ...string) string {
+	for _, key := range keys {
+		switch value := metadata[key].(type) {
+		case string:
+			if value != "" {
+				return value
+			}
+		case float64:
+			return strconv.FormatFloat(value, 'f', -1, 64)
+		}
+	}
+	return ""
+}
+
+// Runtime logs are never rotated, so reading the whole file to keep the last few
+// lines grows without bound as the gateway stays up. Read a bounded tail window.
+const logTailWindow = 64 << 10
+
 func tailLines(path string, limit int, cfg config.Config) []string {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
+		return []string{}
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return []string{}
+	}
+	offset := int64(0)
+	if info.Size() > logTailWindow {
+		offset = info.Size() - logTailWindow
+	}
+	data := make([]byte, info.Size()-offset)
+	if _, err := file.ReadAt(data, offset); err != nil && !errors.Is(err, io.EOF) {
+		return []string{}
+	}
+	// A window starting mid-line would render a truncated fragment as if it were
+	// a complete log entry, so drop everything before the first boundary.
+	if offset > 0 {
+		index := bytes.IndexByte(data, '\n')
+		if index < 0 {
+			return []string{}
+		}
+		data = data[index+1:]
+	}
+	if len(data) == 0 {
 		return []string{}
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")

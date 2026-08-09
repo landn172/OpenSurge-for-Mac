@@ -1425,6 +1425,83 @@ func TestDiagnosticLogTailRedactsKnownCredentials(t *testing.T) {
 	}
 }
 
+func TestDiagnosticLogTailReadsBoundedWindowWithoutPartialLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mihomo.log")
+	var builder strings.Builder
+	for index := 0; index < 4000; index++ {
+		fmt.Fprintf(&builder, "line-%d %s\n", index, strings.Repeat("x", 120))
+	}
+	if err := os.WriteFile(path, []byte(builder.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if int64(builder.Len()) <= logTailWindow {
+		t.Fatalf("fixture must exceed the tail window, got %d bytes", builder.Len())
+	}
+	lines := tailLines(path, 80, config.Default())
+	if len(lines) != 80 {
+		t.Fatalf("tail line count = %d, want 80", len(lines))
+	}
+	// Every retained line must be whole: a window cut mid-line would leave the
+	// first entry without its "line-N " prefix.
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "line-") {
+			t.Fatalf("partial line retained: %q", line)
+		}
+	}
+	if want := fmt.Sprintf("line-3999 %s", strings.Repeat("x", 120)); lines[len(lines)-1] != want {
+		t.Fatalf("last line = %q, want %q", lines[len(lines)-1], want)
+	}
+}
+
+func TestDiagnosticsConnectionsCapsToBusiestAndKeepsTrueTotal(t *testing.T) {
+	snapshot := mihomo.ConnectionsSnapshot{UploadTotal: 11, DownloadTotal: 22}
+	for index := 0; index < diagnosticsConnectionLimit+50; index++ {
+		snapshot.Connections = append(snapshot.Connections, mihomo.Connection{
+			ID:       fmt.Sprintf("conn-%d", index),
+			Download: int64(index),
+			Metadata: map[string]any{"host": fmt.Sprintf("host-%d", index), "destinationPort": "443"},
+		})
+	}
+	result := diagnosticsConnectionsFrom(snapshot)
+	if result.Total != diagnosticsConnectionLimit+50 {
+		t.Fatalf("total = %d, want %d", result.Total, diagnosticsConnectionLimit+50)
+	}
+	if len(result.Connections) != diagnosticsConnectionLimit {
+		t.Fatalf("returned = %d, want %d", len(result.Connections), diagnosticsConnectionLimit)
+	}
+	if result.UploadTotal != 11 || result.DownloadTotal != 22 {
+		t.Fatalf("totals must survive truncation, got %d/%d", result.UploadTotal, result.DownloadTotal)
+	}
+	if result.Connections[0].ID != "conn-249" {
+		t.Fatalf("busiest connection = %q, want conn-249", result.Connections[0].ID)
+	}
+	if result.Connections[0].Host != "host-249" || result.Connections[0].Port != "443" {
+		t.Fatalf("target projection = %q:%q", result.Connections[0].Host, result.Connections[0].Port)
+	}
+}
+
+func TestDiagnosticsConnectionTargetFallsBackAcrossMetadataKeys(t *testing.T) {
+	snapshot := mihomo.ConnectionsSnapshot{Connections: []mihomo.Connection{
+		{ID: "empty-host", Metadata: map[string]any{"host": "", "sniffHost": "sniffed.example", "destinationPort": float64(8443)}},
+		{ID: "ip-only", Metadata: map[string]any{"destinationIP": "10.0.0.9"}},
+		{ID: "no-metadata"},
+	}}
+	result := diagnosticsConnectionsFrom(snapshot)
+	byID := map[string]DiagnosticsConnection{}
+	for _, connection := range result.Connections {
+		byID[connection.ID] = connection
+	}
+	if got := byID["empty-host"]; got.Host != "sniffed.example" || got.Port != "8443" {
+		t.Fatalf("sniff fallback = %q:%q", got.Host, got.Port)
+	}
+	if got := byID["ip-only"]; got.Host != "10.0.0.9" || got.Port != "" {
+		t.Fatalf("ip fallback = %q:%q", got.Host, got.Port)
+	}
+	if got := byID["no-metadata"]; got.Host != "" || got.Port != "" {
+		t.Fatalf("missing metadata must stay empty, got %q:%q", got.Host, got.Port)
+	}
+}
+
 func TestDeviceTrafficKeepsLeaseInventoryWhenMihomoIsUnavailable(t *testing.T) {
 	server := newTestServer(t)
 	cfg, err := config.LoadRuntime(server.configPath)
