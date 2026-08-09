@@ -1,13 +1,25 @@
 # GUI 控制面
 
 OpenSurge 的完整 GUI 是 `web/` 中的 React 应用，菜单栏 App 是
-`apps/menubar/` 中由 AppKit 管理生命周期和状态项、由 SwiftUI 渲染状态面板的只读
+`apps/menubar/` 中由 AppKit 管理生命周期和状态项、由 SwiftUI 渲染状态面板的
 launcher。两者都只访问 `cmd/opensurge-control` 提供的 loopback API；业务规则继续位于
 Go gateway、device、mihomo 和 runtime 包中。
 
-菜单栏 App 不提供 start/stop 或策略切换。它只消费 `/api/v1/menubar`，显示网关、
-客户端、drift 和恢复状态，并通过一次性 bootstrap URL 打开 Web GUI。不要把菜单栏
-演变成第二控制面。
+菜单栏 App 唯一拥有的生命周期动作是网关 start/stop：面板顶部的开关，以及打开 App 时
+默认执行一次的自动启动。除此之外它仍然只消费 `/api/v1/menubar`，显示网关、客户端、
+drift 和恢复状态，并通过一次性 bootstrap URL 打开 Web GUI。topology、plan blocker、
+DHCP 接管恢复状态机、源与策略都不进菜单栏——不要把它演变成第二控制面。
+
+因此 `/api/v1/menubar` 必须带 `runtime_state`：`interrupted` 与真正 degraded 的数据面
+都报告 `gateway=degraded`，但前者是上次开机留下的 runtime，必须先做一次 stop 形式的
+安全清理，start 才可能成功。开关据此禁用并提供“安全清理旧状态”，而不是发出注定被
+拒绝的 start。同理，`same_wifi_dhcp` 与未完成的恢复必须禁用开关和自动启动：Control API
+只在确认路由器 DHCP 已关闭后才接受该 topology 的 start。
+
+gateway start/stop 返回 202 与 operation，必须轮询 `/api/v1/operations/{id}` 到终态；
+`Idempotency-Key` 被 Control API 直接当作 operation id，所以每次尝试都要用新的 key，
+否则拿回的是上一次的结果。自动启动每次进程启动最多尝试一次，并在尝试时（而不是成功时）
+记录，避免失败后每次轮询都重试。
 
 版本发现属于原生 App 生命周期而不是网关控制面。菜单栏 App 打开时至多每 24 小时查询
 一次本仓库 GitHub `releases/latest`，也提供手动检查；只比较稳定版语义版本并校验返回的

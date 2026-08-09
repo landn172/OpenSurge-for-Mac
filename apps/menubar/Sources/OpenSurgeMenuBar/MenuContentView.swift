@@ -411,6 +411,38 @@ private struct MenuNoteBlock: View {
     }
 }
 
+// The one control in this panel that is not a menu row. The gateway is the
+// thing the app exists to turn on, so it gets a real switch at the top rather
+// than a checkmark buried in the command list.
+private struct MenuSwitchRow: View {
+    let title: String
+    let state: GatewaySwitchState
+    let action: (Bool) -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13, weight: .semibold))
+                Text(state.subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer(minLength: 8)
+            Toggle("", isOn: Binding(get: { state.isOn }, set: action))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(!state.isEnabled)
+                .accessibilityLabel(title)
+        }
+        .padding(.horizontal, MenuMetrics.contentInset)
+        .frame(height: 32)
+        .help(state.help)
+    }
+}
+
 private struct MenuSeparator: View {
     var body: some View {
         Divider()
@@ -428,12 +460,25 @@ struct MenuContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             MenuHeader(indicator: model.indicator, subtitle: headerSubtitle)
 
+            MenuSwitchRow(title: gatewaySwitchTitle, state: model.gatewaySwitch) { isOn in
+                setGatewayRunning(isOn)
+            }
+
+            MenuSeparator()
             statusSection
 
             MenuSeparator()
             commandSection
 
             MenuSeparator()
+            MenuRow(
+                title: "打开 App 时自动启动",
+                icon: .checkmark(model.autoStartGateway),
+                help: autoStartHelp
+            ) {
+                model.autoStartGateway.toggle()
+            }
+
             MenuRow(
                 title: "登录时显示",
                 icon: .checkmark(model.openAtLogin),
@@ -546,6 +591,20 @@ struct MenuContentView: View {
             .disabled(model.isRefreshing)
         }
 
+        if let status = model.status, status.runtimeInterrupted {
+            // The switch cannot offer start over a runtime left by the previous
+            // boot; this is the one command that clears it.
+            MenuRow(
+                title: "安全清理旧状态",
+                icon: .symbol("bandage"),
+                isDefault: true,
+                help: "只清理上次开机留下的状态，不会向旧 PID 发送信号，也不会改动本次开机的 PF 或 IPv4 转发"
+            ) {
+                confirmCleanupInterruptedRuntime()
+            }
+            .disabled(model.pendingGatewayAction != nil)
+        }
+
         if let status = model.status, status.recoveryRequired, status.recoveryNeedsAttention {
             // No snapshot badge here: `recoveryNeedsAttention` excludes the
             // "prepared" stage, so `recoverySnapshotPrepared` can never be true
@@ -655,7 +714,22 @@ struct MenuContentView: View {
 
     private var hasRecoveryDefaultItem: Bool {
         if model.status == nil, model.serviceNeedsReconnect { return true }
+        // An interrupted runtime carries no recovery state for the bypass
+        // topologies, so it has to be named here or the cleanup row and the
+        // panel row would both render as the default.
+        if model.status?.runtimeInterrupted == true { return true }
         return model.status?.recoveryNeedsAttention == true
+    }
+
+    private var gatewaySwitchTitle: String {
+        model.status?.topologyLabel ?? "网关"
+    }
+
+    private var autoStartHelp: String {
+        guard let status = model.status, !status.gatewaySwitchable else {
+            return "局域网 DHCP 接管不会自动启动；它只能在面板的网络设置中按恢复流程进行"
+        }
+        return "打开 OpenSurge 后，如果\(status.topologyLabel)已停止且没有待处理的网络恢复，就自动启动它"
     }
 
     private var headerSubtitle: String {
@@ -692,6 +766,21 @@ struct MenuContentView: View {
     private func setOpenAtLogin(_ enabled: Bool) {
         model.openAtLogin = enabled
         try? enabled ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+    }
+
+    // Starting is what the switch is for, so it never asks. Stopping does ask
+    // once downstream clients are actually leaning on this Mac for DHCP/DNS and
+    // routing, because that flip drops them.
+    private func setGatewayRunning(_ running: Bool) {
+        if !running, let status = model.status, status.clientCount > 0 {
+            guard gatewayStopConfirmation(clientCount: status.clientCount).present() else { return }
+        }
+        model.setGatewayRunning(running)
+    }
+
+    private func confirmCleanupInterruptedRuntime() {
+        guard interruptedRuntimeCleanupConfirmation().present() else { return }
+        model.cleanupInterruptedRuntime()
     }
 
     private func confirmQuit(_ confirmation: QuitConfirmation) {
@@ -755,6 +844,41 @@ private enum UninstallConfirmation {
         default: return nil
         }
     }
+}
+
+/// The copy is plain data so the checks can assert it; only presenting it needs
+/// the main actor.
+struct GatewayConfirmation {
+    let title: String
+    let message: String
+    let buttonTitle: String
+
+    @MainActor
+    func present() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: buttonTitle).hasDestructiveAction = true
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+}
+
+func gatewayStopConfirmation(clientCount: Int) -> GatewayConfirmation {
+    GatewayConfirmation(
+        title: "停止网关？",
+        message: "当前有 \(clientCount) 台下游设备在使用这台 Mac 的 DHCP/DNS 与代理转发，停止后它们会立即失去这些服务。",
+        buttonTitle: "停止网关"
+    )
+}
+
+func interruptedRuntimeCleanupConfirmation() -> GatewayConfirmation {
+    GatewayConfirmation(
+        title: "安全清理上次开机留下的状态？",
+        message: "OpenSurge 不会向旧 PID 发送信号，也不会更改本次开机的 PF 或 IPv4 转发。如果上次运行启用了系统代理协同，将恢复为 OpenSurge 启动前保存的状态。",
+        buttonTitle: "安全清理"
+    )
 }
 
 @MainActor

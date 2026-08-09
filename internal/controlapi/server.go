@@ -569,7 +569,11 @@ func (s *Server) handleMenuBar(w http.ResponseWriter, r *http.Request) {
 	cfg, _ := config.LoadRuntime(s.configPath)
 	writeJSON(w, http.StatusOK, MenuBarStatus{
 		SchemaVersion: SchemaVersion, Revision: overview.Revision, Gateway: overview.Status.Gateway,
-		Topology: cfg.Gateway.Mode, LANIP: overview.Status.LANIP, DHCP: overview.Status.DHCP,
+		// The menu bar gateway switch needs to tell a reboot-interrupted runtime
+		// apart from a genuinely degraded one: both report gateway=degraded, but
+		// only the former must be cleaned up with stop before start is offered.
+		RuntimeState: overview.Status.RuntimeState,
+		Topology:     cfg.Gateway.Mode, LANIP: overview.Status.LANIP, DHCP: overview.Status.DHCP,
 		Mihomo: overview.Status.Mihomo, PFAnchor: overview.Status.PFAnchor, Forwarding: overview.Status.Forwarding,
 		TUN: overview.Status.TUN, TUNInterface: overview.Status.TUNInterface, TUNError: overview.Status.TUNError,
 		ClientCount: overview.Status.ClientCount, Drift: overview.Drift, DoctorHealthy: overview.DoctorHealthy,

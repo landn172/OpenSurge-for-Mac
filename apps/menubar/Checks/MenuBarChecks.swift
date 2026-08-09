@@ -188,6 +188,165 @@ struct MenuBarChecks {
         let forwardingAlreadyEnabled = MenuBarStatus(schemaVersion: 1, revision: "r", gateway: "stopped", topology: "isolated_lan", lanIp: "192.168.50.1", dhcp: "stopped", mihomo: "stopped", pfAnchor: "unloaded", forwarding: "enabled", clientCount: 0, drift: false, doctorHealthy: true, recoveryRequired: false, recoveryStage: nil, warnings: [], errorCode: nil)
         try require(!forwardingAlreadyEnabled.gatewayServicesActive && forwardingAlreadyEnabled.canQuitOpenSurge && forwardingAlreadyEnabled.canUninstall, "host forwarding must not block quit or uninstall")
 
+        // MARK: gateway switch and launch-time auto start
+
+        let bypassStopped = MenuBarStatus(schemaVersion: 1, revision: "r", gateway: "stopped", runtimeState: "none", topology: "same_lan", lanIp: "192.168.1.20", dhcp: "stopped", mihomo: "stopped", pfAnchor: "unloaded", forwarding: "disabled", clientCount: 0, drift: true, doctorHealthy: true, recoveryRequired: false, recoveryStage: nil, warnings: [], errorCode: nil)
+        let bypassRunning = MenuBarStatus(schemaVersion: 1, revision: "r", gateway: "running", runtimeState: "active", topology: "same_lan", lanIp: "192.168.1.20", dhcp: "stopped", mihomo: "running", pfAnchor: "loaded", forwarding: "enabled", clientCount: 3, drift: false, doctorHealthy: true, recoveryRequired: false, recoveryStage: nil, warnings: [], errorCode: nil)
+        let bypassInterrupted = MenuBarStatus(schemaVersion: 1, revision: "r", gateway: "degraded", runtimeState: "interrupted", topology: "same_lan", lanIp: "192.168.1.20", dhcp: "stopped", mihomo: "stopped", pfAnchor: "unloaded", forwarding: "unknown", clientCount: 0, drift: false, doctorHealthy: false, recoveryRequired: false, recoveryStage: nil, warnings: [], errorCode: nil)
+
+        try require(
+            menuBarGatewaySwitch(status: bypassStopped, pendingAction: nil) == GatewaySwitchState(isOn: false, isEnabled: true, subtitle: "已停止", help: "打开后会按当前配置启动网关"),
+            "a stopped bypass gateway must offer the switch, and unapplied config drift must not block starting it"
+        )
+        try require(
+            menuBarGatewaySwitch(status: bypassRunning, pendingAction: nil).isOn
+                && menuBarGatewaySwitch(status: bypassRunning, pendingAction: nil).isEnabled,
+            "a running bypass gateway must be stoppable from the switch"
+        )
+        try require(
+            menuBarGatewaySwitch(status: bypassStopped, pendingAction: .start) == GatewaySwitchState(isOn: true, isEnabled: false, subtitle: "正在启动…", help: "正在启动网关，完成前无法再次切换"),
+            "an in-flight start must hold the switch at its requested state without a spinner"
+        )
+        try require(
+            menuBarGatewaySwitch(status: nil, pendingAction: nil).isEnabled == false,
+            "the switch must stay inert until the Control Service reports a status"
+        )
+        try require(
+            menuBarGatewaySwitch(status: bypassInterrupted, pendingAction: nil) == GatewaySwitchState(isOn: false, isEnabled: false, subtitle: "重启后待清理", help: "上次开机留下的运行状态需要先安全清理，然后才能重新启动网关"),
+            "a runtime left by the previous boot reports gateway=degraded, and the switch must name it instead of offering a start the gateway will refuse"
+        )
+        try require(
+            menuBarGatewaySwitch(status: active, pendingAction: nil).isEnabled == false
+                && menuBarGatewaySwitch(status: stopped, pendingAction: nil).isEnabled == false,
+            "same-LAN DHCP takeover starts and stops only through the recovery flow, never from the switch"
+        )
+        try require(
+            menuBarGatewaySwitch(status: recovery, pendingAction: nil).isEnabled == false,
+            "an unfinished network recovery must block the switch"
+        )
+
+        try require(
+            menuBarAutoStartDecision(status: bypassStopped, enabled: true, alreadyAttempted: false) == .start,
+            "opening the app must start a stopped bypass gateway"
+        )
+        try require(
+            menuBarAutoStartDecision(status: bypassStopped, enabled: false, alreadyAttempted: false) != .start,
+            "auto start must honour the preference"
+        )
+        try require(
+            menuBarAutoStartDecision(status: bypassStopped, enabled: true, alreadyAttempted: true) != .start,
+            "auto start must run at most once per launch, so a failed start is not retried on every poll"
+        )
+        try require(
+            menuBarAutoStartDecision(status: nil, enabled: true, alreadyAttempted: false) != .start
+                && menuBarAutoStartDecision(status: bypassRunning, enabled: true, alreadyAttempted: false) != .start
+                && menuBarAutoStartDecision(status: bypassInterrupted, enabled: true, alreadyAttempted: false) != .start,
+            "auto start must require a known, fully stopped gateway"
+        )
+        try require(
+            menuBarAutoStartDecision(status: stopped, enabled: true, alreadyAttempted: false) != .start,
+            "auto start must never drive same-LAN DHCP takeover: the Control API accepts it only after router DHCP was confirmed disabled"
+        )
+        try require(
+            menuBarAutoStartDecision(status: recovery, enabled: true, alreadyAttempted: false) != .start,
+            "auto start must never run while network recovery is unfinished"
+        )
+
+        var gatewayRequests: [(path: String, method: String, idempotencyKey: String?)] = []
+        CheckURLProtocol.handler = { request in
+            gatewayRequests.append((request.url?.path ?? "", request.httpMethod ?? "", request.value(forHTTPHeaderField: "Idempotency-Key")))
+            try require(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-token", "gateway action bearer token missing")
+            let body = #"{"schema_version":1,"id":"op-1","kind":"start","state":"running","created_at":"2026-07-12T00:00:00Z","updated_at":"2026-07-12T00:00:00Z"}"#
+            return (HTTPURLResponse(url: request.url!, statusCode: 202, httpVersion: nil, headerFields: nil)!, Data(body.utf8))
+        }
+        let firstStart: GatewayOperation
+        let secondStart: GatewayOperation
+        do {
+            firstStart = try await client.gateway(.start)
+            secondStart = try await client.gateway(.start)
+        } catch { throw CheckFailure.failed("gateway start request failed: \(CheckURLProtocol.lastFailure ?? String(describing: error))") }
+        try require(gatewayRequests.count == 2 && gatewayRequests.allSatisfy { $0.path == "/api/v1/gateway/start" && $0.method == "POST" }, "gateway start must POST the Control API start action")
+        try require(gatewayRequests.allSatisfy { $0.idempotencyKey?.isEmpty == false }, "gateway actions must carry an Idempotency-Key")
+        try require(
+            gatewayRequests[0].idempotencyKey != gatewayRequests[1].idempotencyKey,
+            "each attempt needs a fresh key: the Control API stores this header as the operation id and replays the stored operation for a repeat"
+        )
+        try require(!firstStart.isFinished && firstStart.id == "op-1" && secondStart.id == "op-1", "a 202 operation is not a result; the switch must keep polling it")
+
+        CheckURLProtocol.handler = { request in
+            try require(request.url?.path == "/api/v1/operations/op-1" && request.httpMethod == "GET", "operation polling path mismatch")
+            let body = #"{"schema_version":1,"id":"op-1","kind":"start","state":"failed","error":"preflight failed","created_at":"2026-07-12T00:00:00Z","updated_at":"2026-07-12T00:00:05Z"}"#
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(body.utf8))
+        }
+        let finishedStart: GatewayOperation
+        do { finishedStart = try await client.operation(id: "op-1") }
+        catch { throw CheckFailure.failed("operation poll failed: \(CheckURLProtocol.lastFailure ?? String(describing: error))") }
+        try require(finishedStart.isFinished && finishedStart.failed && finishedStart.error == "preflight failed", "a failed gateway operation must surface its reason instead of reading as success")
+
+        try require(
+            gatewayStopConfirmation(clientCount: 3).message.contains("3 台"),
+            "stopping while downstream clients are served must name how many lose service"
+        )
+
+        let stoppedBypassBody = #"{"schema_version":1,"revision":"r","gateway":"stopped","runtime_state":"none","topology":"same_lan","lan_ip":"192.168.1.20","dhcp":"stopped","mihomo":"stopped","tun":"stopped","pf_anchor":"unloaded","forwarding":"disabled","client_count":0,"drift":false,"doctor_healthy":true,"recovery_required":false,"warnings":[]}"#
+        var autoStartCount = 0
+        CheckURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            switch path {
+            case "/api/v1/menubar":
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(stoppedBypassBody.utf8))
+            case "/api/v1/gateway/start":
+                autoStartCount += 1
+                let body = #"{"schema_version":1,"id":"auto-start","kind":"start","state":"succeeded","created_at":"2026-07-12T00:00:00Z","updated_at":"2026-07-12T00:00:09Z"}"#
+                return (HTTPURLResponse(url: request.url!, statusCode: 202, httpVersion: nil, headerFields: nil)!, Data(body.utf8))
+            default:
+                throw CheckFailure.failed("unexpected request during auto start: \(path)")
+            }
+        }
+        let autoStartModel = await StatusModel(
+            client: client,
+            defaults: UserDefaults(suiteName: "opensurge-menubar-check-\(UUID().uuidString)")!,
+            currentVersion: "0.1.24"
+        )
+        await autoStartModel.refresh()
+        try await settle(autoStartModel)
+        try require(autoStartCount == 1, "opening the app must start a stopped bypass gateway")
+        await autoStartModel.refresh()
+        try await settle(autoStartModel)
+        try require(autoStartCount == 1, "auto start must run at most once per launch")
+
+        // Launch finds the gateway already running, so auto start declines. When
+        // the user later switches it off, that decision must stick: auto start
+        // belongs to the launch, and a poll is not a new launch.
+        let runningBypassBody = #"{"schema_version":1,"revision":"r","gateway":"running","runtime_state":"active","topology":"same_lan","lan_ip":"192.168.1.20","dhcp":"stopped","mihomo":"running","tun":"ready","pf_anchor":"loaded","forwarding":"enabled","client_count":2,"drift":false,"doctor_healthy":true,"recovery_required":false,"warnings":[]}"#
+        var statusResponses = 0
+        var startsAfterManualStop = 0
+        CheckURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            switch path {
+            case "/api/v1/menubar":
+                statusResponses += 1
+                let body = statusResponses == 1 ? runningBypassBody : stoppedBypassBody
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(body.utf8))
+            case "/api/v1/gateway/start":
+                startsAfterManualStop += 1
+                let body = #"{"schema_version":1,"id":"unwanted-start","kind":"start","state":"succeeded","created_at":"2026-07-12T00:00:00Z","updated_at":"2026-07-12T00:00:09Z"}"#
+                return (HTTPURLResponse(url: request.url!, statusCode: 202, httpVersion: nil, headerFields: nil)!, Data(body.utf8))
+            default:
+                throw CheckFailure.failed("unexpected request after manual stop: \(path)")
+            }
+        }
+        let manualStopModel = await StatusModel(
+            client: client,
+            defaults: UserDefaults(suiteName: "opensurge-menubar-check-\(UUID().uuidString)")!,
+            currentVersion: "0.1.24"
+        )
+        await manualStopModel.refresh()
+        try await settle(manualStopModel)
+        await manualStopModel.refresh()
+        try await settle(manualStopModel)
+        try require(startsAfterManualStop == 0, "auto start must not undo a gateway the user switched off after launch")
+
         let (useDefaultReopen, presentationCount) = await MainActor.run {
             let panelPresenter = CheckMenuBarPresenter()
             let appDelegate = OpenSurgeAppDelegate(presenter: panelPresenter)
@@ -288,6 +447,17 @@ struct MenuBarChecks {
 
         print("OpenSurge menu bar checks passed")
     }
+}
+
+/// Waits for the model to have no gateway operation and no refresh in flight,
+/// so the next assertion reads settled state rather than a mid-flight sample.
+private func settle(_ model: StatusModel) async throws {
+    for _ in 0..<200 {
+        let busy = await MainActor.run { model.pendingGatewayAction != nil || model.isRefreshing }
+        if !busy { return }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    throw CheckFailure.failed("gateway action did not settle")
 }
 
 @MainActor

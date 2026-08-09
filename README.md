@@ -131,7 +131,7 @@ OpenSurge 有意不内置家庭模板或第三方规则列表；策略内容由�
 通过安装包使用 OpenSurge 时，请从
 [OpenSurge for Mac App 使用指南](docs/app-user-guide.zh-CN.md)开始。
 
-本地 Control API、React Web GUI 和只读 SwiftUI 菜单栏 launcher 已进入仓库。开发构建：
+本地 Control API、React Web GUI 和 SwiftUI 菜单栏 launcher 已进入仓库。开发构建：
 
 ```sh
 make web-install
@@ -141,7 +141,8 @@ make menubar-build
 ```
 
 控制服务只监听 `127.0.0.1`，启动时会输出一次性 Web GUI 链接。菜单栏 App 显示
-状态、恢复警报并打开 Web GUI，不提供网关 start/stop 或策略切换。它区分“只退出菜单栏
+状态、恢复警报并打开 Web GUI，面板顶部的开关可以直接启停网关，打开 App 时也会自动启动
+一次（可关闭）；topology、DHCP 接管恢复状态机与策略切换仍留在 Web GUI。它区分“只退出菜单栏
 App”和“退出 OpenSurge”：后者只在网关数据面已经停止时退出菜单栏 App 与用户级
 Control Service；系统 launchd 托管的 root Helper 保持空闲加载，下次打开无需再次授权。
 菜单栏还提供独立的“卸载 OpenSurge”入口：只要网关已经停止即可通过 macOS 管理员授权

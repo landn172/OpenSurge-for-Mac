@@ -47,6 +47,7 @@ type MenuBarStatus struct {
 	SchemaVersion int      `json:"schema_version"`
 	Revision      string   `json:"revision"`
 	Gateway       string   `json:"gateway"`
+	RuntimeState  string   `json:"runtime_state,omitempty"`
 	Topology      string   `json:"topology"`
 	LANIP         string   `json:"lan_ip"`
 	DHCP          string   `json:"dhcp"`

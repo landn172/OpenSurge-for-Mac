@@ -4,6 +4,7 @@ struct MenuBarStatus: Codable, Equatable {
     let schemaVersion: Int
     let revision: String
     let gateway: String
+    let runtimeState: String?
     let topology: String
     let lanIp: String
     let dhcp: String
@@ -23,7 +24,9 @@ struct MenuBarStatus: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
-        case revision, gateway, topology
+        case revision, gateway
+        case runtimeState = "runtime_state"
+        case topology
         case lanIp = "lan_ip"
         case dhcp, mihomo, tun
         case tunInterface = "tun_interface"
@@ -43,6 +46,7 @@ struct MenuBarStatus: Codable, Equatable {
         schemaVersion: Int,
         revision: String,
         gateway: String,
+        runtimeState: String? = nil,
         topology: String,
         lanIp: String,
         dhcp: String,
@@ -63,6 +67,7 @@ struct MenuBarStatus: Codable, Equatable {
         self.schemaVersion = schemaVersion
         self.revision = revision
         self.gateway = gateway
+        self.runtimeState = runtimeState
         self.topology = topology
         self.lanIp = lanIp
         self.dhcp = dhcp
@@ -80,6 +85,26 @@ struct MenuBarStatus: Codable, Equatable {
         self.warnings = warnings
         self.errorCode = errorCode
     }
+}
+
+enum GatewayAction: String, Equatable {
+    case start
+    case stop
+
+    var verb: String { self == .start ? "启动" : "停止" }
+}
+
+/// The Control API answers `POST /api/v1/gateway/{start,stop}` with 202 and an
+/// operation that finishes later, so the switch has to poll this to completion
+/// rather than treat the response as the result.
+struct GatewayOperation: Codable, Equatable {
+    let id: String
+    let kind: String
+    let state: String
+    let error: String?
+
+    var isFinished: Bool { state == "succeeded" || state == "failed" }
+    var failed: Bool { state == "failed" }
 }
 
 struct BootstrapResponse: Codable {
@@ -153,6 +178,22 @@ extension MenuBarStatus {
         gateway == "running" || gateway == "degraded" || dhcp == "running" || mihomo == "running" || pfAnchor == "loaded"
     }
 
+    /// A runtime left behind by the previous boot. The gateway field reports
+    /// `degraded` for it exactly as it does for a genuinely failing data plane,
+    /// but this one must be cleaned up with stop before start is possible.
+    var runtimeInterrupted: Bool { runtimeState == "interrupted" }
+
+    var gatewayActive: Bool {
+        !runtimeInterrupted && (gateway == "running" || gateway == "degraded")
+    }
+
+    var gatewayStopped: Bool { gateway == "stopped" }
+
+    /// The DHCP takeover topology starts and stops the gateway only as steps of
+    /// the recovery state machine — the Control API rejects a bare start unless
+    /// router DHCP was confirmed disabled — so the switch never drives it.
+    var gatewaySwitchable: Bool { topology != "same_wifi_dhcp" }
+
     var canQuitOpenSurge: Bool {
         gateway == "stopped" && !gatewayServicesActive && !recoveryNeedsAttention
     }
@@ -213,6 +254,115 @@ extension MenuBarStatus {
             "Error code: \(errorCode ?? "none")",
         ].joined(separator: "\n")
     }
+}
+
+struct GatewaySwitchState: Equatable {
+    var isOn: Bool
+    var isEnabled: Bool
+    var subtitle: String
+    var help: String
+}
+
+/// Everything the gateway switch renders, derived in one place so the disabled
+/// cases are testable without a running Control Service.
+func menuBarGatewaySwitch(
+    status: MenuBarStatus?,
+    pendingAction: GatewayAction?
+) -> GatewaySwitchState {
+    guard let status else {
+        return GatewaySwitchState(
+            isOn: false,
+            isEnabled: false,
+            subtitle: "等待后台控制服务",
+            help: "需要先连接 OpenSurge 后台控制服务，才能启停网关"
+        )
+    }
+    if let pendingAction {
+        // The switch shows the requested state while the operation runs, so it
+        // does not snap back before the next status poll lands.
+        return GatewaySwitchState(
+            isOn: pendingAction == .start,
+            isEnabled: false,
+            subtitle: "正在\(pendingAction.verb)…",
+            help: "正在\(pendingAction.verb)网关，完成前无法再次切换"
+        )
+    }
+    if !status.gatewaySwitchable {
+        return GatewaySwitchState(
+            isOn: status.gatewayActive,
+            isEnabled: false,
+            subtitle: status.gatewayActive ? "运行中" : "已停止",
+            help: "局域网 DHCP 接管只能在面板的网络设置中按恢复流程启停"
+        )
+    }
+    if status.runtimeInterrupted {
+        return GatewaySwitchState(
+            isOn: false,
+            isEnabled: false,
+            subtitle: "重启后待清理",
+            help: "上次开机留下的运行状态需要先安全清理，然后才能重新启动网关"
+        )
+    }
+    if status.recoveryNeedsAttention {
+        return GatewaySwitchState(
+            isOn: status.gatewayActive,
+            isEnabled: false,
+            subtitle: "网络恢复未完成",
+            help: "网络恢复尚未完成，请先在面板的网络设置中完成恢复"
+        )
+    }
+    if status.gatewayActive {
+        return GatewaySwitchState(
+            isOn: true,
+            isEnabled: true,
+            subtitle: status.gateway == "running" ? "运行中" : "运行异常",
+            help: "关闭后会停止 DHCP/DNS、mihomo、PF NAT 与 IPv4 转发"
+        )
+    }
+    if status.gatewayStopped {
+        return GatewaySwitchState(
+            isOn: false,
+            isEnabled: true,
+            subtitle: "已停止",
+            help: "打开后会按当前配置启动网关"
+        )
+    }
+    return GatewaySwitchState(
+        isOn: false,
+        isEnabled: false,
+        subtitle: "状态未知",
+        help: "无法确认网关状态，请在面板的网络设置中查看"
+    )
+}
+
+enum GatewayAutoStartDecision: Equatable {
+    case start
+    /// Carries why the launch-time start was declined, so the check binary can
+    /// pin each refusal instead of only observing that nothing happened.
+    case skip(String)
+}
+
+func menuBarAutoStartDecision(
+    status: MenuBarStatus?,
+    enabled: Bool,
+    alreadyAttempted: Bool
+) -> GatewayAutoStartDecision {
+    guard enabled else { return .skip("auto start is disabled") }
+    guard !alreadyAttempted else { return .skip("auto start already ran this launch") }
+    guard let status else { return .skip("gateway status is unknown") }
+    guard status.gatewaySwitchable else {
+        return .skip("same-LAN DHCP takeover starts only through the recovery flow")
+    }
+    guard !status.runtimeInterrupted else {
+        return .skip("an interrupted runtime must be cleaned up first")
+    }
+    guard !status.recoveryNeedsAttention else {
+        return .skip("network recovery is unfinished")
+    }
+    // Only a fully stopped gateway may be started; degraded means a data plane
+    // is still up, and start refuses to run over an existing runtime state.
+    guard status.gatewayStopped else { return .skip("gateway is not stopped") }
+    return .start
 }
 
 func menuBarQuitWarning(for status: MenuBarStatus?) -> String {

@@ -1164,6 +1164,35 @@ func TestGatewayRestartMihomoRejectsPreviousBootRuntime(t *testing.T) {
 	}
 }
 
+func TestMenuBarReportsInterruptedRuntimeState(t *testing.T) {
+	server := newTestServer(t)
+	cfg, err := config.LoadRuntime(server.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := runtime.NewPaths(cfg)
+	if err := runtime.Ensure(paths); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SaveState(paths.StateFile, runtime.State{PIDMihomo: os.Getpid(), BootSessionID: "previous-boot", StartedAt: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	response := performAuthorized(server, http.MethodGet, "/api/v1/menubar", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("menubar status=%d body=%s", response.Code, response.Body.String())
+	}
+	var status MenuBarStatus
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	// gateway alone cannot carry this: an interrupted runtime and a genuinely
+	// degraded one both report "degraded", but only the first must be cleaned
+	// up before the menu bar switch may offer start again.
+	if status.Gateway != "degraded" || status.RuntimeState != "interrupted" {
+		t.Fatalf("gateway=%q runtime_state=%q", status.Gateway, status.RuntimeState)
+	}
+}
+
 func TestGatewayStopAcceptsSkippedClientValidation(t *testing.T) {
 	server := newTestServer(t)
 	if err := server.store.SaveRecovery(RecoveryState{Stage: RecoveryClientValidationSkipped, ClientValidationSkipped: true, Required: true}); err != nil {

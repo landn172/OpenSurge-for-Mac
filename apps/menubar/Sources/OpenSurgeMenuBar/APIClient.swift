@@ -36,6 +36,25 @@ struct ControlAPIClient {
         return try decoder().decode(MenuBarStatus.self, from: data)
     }
 
+    func gateway(_ action: GatewayAction) async throws -> GatewayOperation {
+        let endpoint = try descriptor().url.appending(path: "api/v1/gateway/\(action.rawValue)")
+        // A fresh key per attempt: the Control API stores the header value *as*
+        // the operation id and replays the stored operation when it repeats, so
+        // a stable key would return the previous run instead of starting one.
+        let data = try await request(
+            endpoint,
+            method: "POST",
+            headers: ["Idempotency-Key": UUID().uuidString]
+        )
+        return try decoder().decode(GatewayOperation.self, from: data)
+    }
+
+    func operation(id: String) async throws -> GatewayOperation {
+        let endpoint = try descriptor().url.appending(path: "api/v1/operations/\(id)")
+        let data = try await request(endpoint, method: "GET")
+        return try decoder().decode(GatewayOperation.self, from: data)
+    }
+
     func bootstrapURL(path: String) async throws -> URL {
         let endpoint = try descriptor().url.appending(path: "api/v1/session/bootstrap")
         let body = try JSONEncoder().encode(["path": path])
@@ -63,13 +82,19 @@ struct ControlAPIClient {
         return fileToken
     }
 
-    private func request(_ url: URL, method: String, body: Data? = nil) async throws -> Data {
+    private func request(
+        _ url: URL,
+        method: String,
+        body: Data? = nil,
+        headers: [String: String] = [:]
+    ) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = method
 		request.httpBody = body
         request.timeoutInterval = 5
         request.setValue("Bearer \(try token())", forHTTPHeaderField: "Authorization")
 		if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        for (field, value) in headers { request.setValue(value, forHTTPHeaderField: field) }
         let data: Data
         let response: URLResponse
         do {

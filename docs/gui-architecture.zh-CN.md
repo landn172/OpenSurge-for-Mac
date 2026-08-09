@@ -253,7 +253,19 @@ DHCP、DNS 或 TUN 验收证据，不能显示成“已验收”。
 
 ## 菜单栏边界
 
-菜单栏 App 不提供 start/stop、provider refresh 或策略切换。它每 15 秒获取一次
+菜单栏 App 提供网关 start/stop，但不提供 provider refresh 或策略切换。面板顶部是一个
+开关：打开调用 `POST /api/v1/gateway/start`，关闭调用 `stop`，并轮询返回的 operation 直到
+`succeeded`/`failed`。每次动作使用新的 `Idempotency-Key`，因为 Control API 直接把该 header
+当作 operation id，重复的 key 只会回放旧结果。开关在下列情况下必须禁用而不是发出会被拒绝的
+请求：状态未知、`same_wifi_dhcp`（只能走网络页的恢复状态机）、`runtime_state=interrupted`
+（上次开机留下的 runtime，需要先“安全清理旧状态”，即一次 stop）、以及恢复尚未完成。
+`degraded` 仍算运行中，可以直接停止。启动不二次确认；在有下游客户端时停止会二次确认。
+
+打开 App 时自动启动网关是默认行为，可在面板中关闭（`OpenSurgeAutoStartGateway`）。它每次
+进程启动最多尝试一次，在尝试时就记录，失败不重试；判定条件与开关一致，另外要求网关处于
+完全 `stopped`。未保存配置属于 Web GUI 编辑器状态，菜单栏没有对应概念，因此 drift 不阻止启动。
+
+它每 15 秒获取一次
 `/api/v1/menubar`，窗口打开时每 2 秒刷新，失败时指数退避到最多 60 秒，并根据 connecting、
 stopped、running、degraded、recovery、unreachable 显示状态。首次启动尚未取得状态时，
 connecting 从第一帧就使用半透明 OpenSurge 品牌图标；只有真实请求失败后，unreachable 才
@@ -262,7 +274,8 @@ connecting 从第一帧就使用半透明 OpenSurge 品牌图标；只有真实�
 网关明确处于 `stopped` 时显示“OpenSurge 网关已停止”；此时 runtime-oriented doctor
 未通过或存在待应用配置都不能把“未启动”误报成“运行异常”。
 “只退出菜单栏 App”只终止菜单栏 App；点击后会先提示后台 Control Service 仍会继续，若网关正在
-运行，还会明确 DHCP/DNS、mihomo、PF/转发不会随菜单栏退出。停止网关仍须进入 Web GUI。
+运行，还会明确 DHCP/DNS、mihomo、PF/转发不会随菜单栏退出。停止网关可以直接用面板顶部的开关，
+但 topology 变更、恢复状态机与策略仍在 Web GUI。
 
 构建：
 

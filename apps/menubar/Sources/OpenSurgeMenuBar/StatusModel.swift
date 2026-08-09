@@ -13,7 +13,13 @@ final class StatusModel: ObservableObject {
     @Published private(set) var isCheckingForUpdate = false
     @Published private(set) var availableUpdate: AvailableUpdate?
     @Published private(set) var updateCheckMessage: String?
+    @Published private(set) var pendingGatewayAction: GatewayAction?
     @Published var openAtLogin = false
+    @Published var autoStartGateway: Bool {
+        didSet { defaults.set(autoStartGateway, forKey: Self.autoStartDefaultsKey) }
+    }
+
+    static let autoStartDefaultsKey = "OpenSurgeAutoStartGateway"
 
     private let client: ControlAPIClient
     private let urlLauncher: WebGUIURLLauncher
@@ -24,11 +30,17 @@ final class StatusModel: ObservableObject {
     private var failureCount = 0
     private var isQuitting = false
     private var lastAutomaticUpdateCheck: Date?
+    private var autoStartResolved = false
+    private let defaults: UserDefaults
+    /// The server gives a gateway operation three minutes; the menu bar stops
+    /// waiting a little earlier and points at the panel rather than hang.
+    private static let gatewayOperationTimeout: TimeInterval = 170
 
     init(
         client: ControlAPIClient = ControlAPIClient(),
         urlLauncher: WebGUIURLLauncher = WebGUIURLLauncher(),
         updateChecker: UpdateChecker = UpdateChecker(),
+        defaults: UserDefaults = .standard,
         currentVersion: String = installedReleaseVersion(
             releaseTag: Bundle.main.object(forInfoDictionaryKey: "OpenSurgeReleaseTag") as? String,
             shortVersion: Bundle.main.object(
@@ -40,6 +52,11 @@ final class StatusModel: ObservableObject {
         self.urlLauncher = urlLauncher
         self.updateChecker = updateChecker
         self.currentVersion = currentVersion
+        self.defaults = defaults
+        // Auto start is the default: opening OpenSurge is what a user does when
+        // they want the gateway up. Every guard that makes it safe lives in
+        // `menuBarAutoStartDecision`, not in this default.
+        self.autoStartGateway = defaults.object(forKey: Self.autoStartDefaultsKey) as? Bool ?? true
         self.openAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -66,10 +83,7 @@ final class StatusModel: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false; scheduleNextRefresh() }
         do {
-            status = try await client.status()
-            error = nil
-            serviceNeedsReconnect = false
-            failureCount = 0
+            recordStatus(try await client.status())
         } catch let controlError as ControlAPIError where controlError.serviceUnavailable {
             guard !isQuitting else { return }
             await ControlServiceLauncher.wake()
@@ -77,16 +91,21 @@ final class StatusModel: ObservableObject {
             try? await Task.sleep(for: .milliseconds(350))
             guard !isQuitting else { return }
             do {
-                status = try await client.status()
-                error = nil
-                serviceNeedsReconnect = false
-                failureCount = 0
+                recordStatus(try await client.status())
             } catch {
                 recordFailure(error)
             }
         } catch {
             recordFailure(error)
         }
+    }
+
+    private func recordStatus(_ value: MenuBarStatus) {
+        status = value
+        error = nil
+        serviceNeedsReconnect = false
+        failureCount = 0
+        autoStartGatewayIfNeeded()
     }
 
     func reconnectService() async {
@@ -99,6 +118,78 @@ final class StatusModel: ObservableObject {
         try? await Task.sleep(for: .milliseconds(350))
         isRefreshing = false
         await refresh()
+    }
+
+    var gatewaySwitch: GatewaySwitchState {
+        menuBarGatewaySwitch(status: status, pendingAction: pendingGatewayAction)
+    }
+
+    func setGatewayRunning(_ running: Bool) {
+        performGatewayAction(running ? .start : .stop)
+    }
+
+    /// Stopping an interrupted runtime is a reconciliation, not an ordinary
+    /// stop: it removes state left by the previous boot without signalling
+    /// this boot's processes or touching its PF and forwarding.
+    func cleanupInterruptedRuntime() {
+        performGatewayAction(.stop)
+    }
+
+    private func performGatewayAction(_ action: GatewayAction) {
+        guard !isQuitting, pendingGatewayAction == nil else { return }
+        pendingGatewayAction = action
+        error = nil
+        Task {
+            let failure = await runGatewayAction(action)
+            pendingGatewayAction = nil
+            if let failure { error = failure }
+            await refreshAfterGatewayAction()
+        }
+    }
+
+    private func runGatewayAction(_ action: GatewayAction) async -> String? {
+        do {
+            var operation = try await client.gateway(action)
+            let deadline = Date().addingTimeInterval(Self.gatewayOperationTimeout)
+            while !operation.isFinished {
+                guard Date() < deadline else {
+                    return "网关\(action.verb)尚未返回结果，请在面板的网络设置中确认状态"
+                }
+                try await Task.sleep(for: .milliseconds(500))
+                guard !isQuitting else { return nil }
+                operation = try await client.operation(id: operation.id)
+            }
+            guard operation.failed else { return nil }
+            return operation.error.map { "网关\(action.verb)失败：\($0)" } ?? "网关\(action.verb)失败"
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    // `refresh()` no-ops while another refresh is in flight, and that one may
+    // have read status before the operation finished. Wait for it to land so the
+    // switch settles on the post-action state instead of on a stale sample.
+    private func refreshAfterGatewayAction() async {
+        var waited = 0
+        while isRefreshing, waited < 20 {
+            try? await Task.sleep(for: .milliseconds(150))
+            waited += 1
+        }
+        await refresh()
+    }
+
+    private func autoStartGatewayIfNeeded() {
+        let decision = menuBarAutoStartDecision(
+            status: status,
+            enabled: autoStartGateway,
+            alreadyAttempted: autoStartResolved
+        )
+        // The first status of this launch decides, once — including when it
+        // decides not to start. Anything after it is the user's own doing, and a
+        // gateway they just switched off must not come back on the next poll.
+        autoStartResolved = true
+        guard case .start = decision else { return }
+        performGatewayAction(.start)
     }
 
     func quitMenuBarApp() -> Never {
