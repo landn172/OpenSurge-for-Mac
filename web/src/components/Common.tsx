@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { recoveryLabel } from '../status'
+import { recoveryLabel } from '../recovery'
 
 export function RecoveryBanner({ recovery, onOpen }: { recovery: string; onOpen: () => void }) {
   return <div className="recovery-banner" role="alert"><span aria-hidden="true">⚠</span><div><strong>网络恢复尚未完成</strong><p>{recoveryLabel(recovery)}。网络已开始变更；请在网络设置中完成状态机，并在路由器 DHCP 恢复已验证前不要把 Mac 切回自动 DHCP。</p></div><button onClick={onOpen}>继续恢复</button></div>

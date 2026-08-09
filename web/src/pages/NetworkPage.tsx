@@ -2,7 +2,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { api, waitForOperation } from '../api'
 import { Mode, PageHeader, SectionTitle } from '../components/Common'
 import { NetworkModeDetail } from '../components/NetworkModeDetail'
-import { recoveryLabel } from '../status'
+import { planBlockersApply, recoveryActionLabel, recoveryLabel, recoveryNextAction, recoveryTimeline } from '../recovery'
 import type { ControlConfig, DevicePolicyDocument, GatewayPlan, NetworkInterfaceOption, Overview, PolicyDevice, PolicySet } from '../types'
 
 const ipv4Pattern = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/
@@ -35,9 +35,7 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
   const [ipv6Acknowledged, setIPv6Acknowledged] = useState(false)
   const [policyMigration, setPolicyMigration] = useState<PolicyMigration | null>(null)
   const current = overview?.recovery.stage ?? 'idle'
-  const clientCheckpoint = overview?.recovery.client_validation_skipped ? 'client_validation_skipped' : 'client_validated'
-  const completion = current === 'complete_static' ? 'complete_static' : 'complete'
-  const stages = ['prepared', 'mac_static', 'router_dhcp_disabled_confirmed', 'gateway_active', clientCheckpoint, 'gateway_stopped_waiting_router_dhcp', 'router_dhcp_restored', completion]
+  const stages = recoveryTimeline(Boolean(overview?.recovery.client_validation_skipped), current)
   const currentIndex = stages.indexOf(current)
   const recoveryBlocksConfig = Boolean(overview?.recovery.required && current !== 'prepared')
   const configDirty = Boolean(config && savedConfig && JSON.stringify(config) !== JSON.stringify(savedConfig))
@@ -46,8 +44,7 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
   const gatewayInterrupted = overview?.status.runtime_state === 'interrupted'
   const dhcpRuntimeDisabled = config?.gateway.mode === 'same_lan'
   const configurationEditable = !busy && gatewayStopped && !recoveryBlocksConfig
-  const planBlockersApply = ['idle', 'complete', 'complete_static', 'prepared', 'mac_static', 'router_dhcp_disabled_confirmed'].includes(current)
-  const blockedByPlan = planBlockersApply && (plan?.blockers.length ?? 0) > 0
+  const blockedByPlan = planBlockersApply(current) && (plan?.blockers.length ?? 0) > 0
   const recoverySnapshot = overview?.recovery.network_snapshot
   const router = plan?.snapshot.router || recoverySnapshot?.router || ''
   const networkService = plan?.snapshot.network_service || recoverySnapshot?.network_service || 'Wi-Fi'
@@ -199,15 +196,15 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
     }
     setBusy(true); setError('')
     try {
-      switch (current) {
-      case 'idle': case 'complete': case 'complete_static': await api.prepareRecovery(); break
-      case 'prepared': await api.applyStatic(); break
-      case 'mac_static': await api.probeDHCP(); break
-      case 'router_dhcp_disabled_confirmed': await waitForOperation((await api.gateway('start')).id); break
-      case 'gateway_active': await api.validateClient(clientIPv4, ipv6Acknowledged); break
-      case 'client_validated': case 'client_validation_skipped': await waitForOperation((await api.gateway('stop')).id); break
-      case 'gateway_stopped_waiting_router_dhcp': await api.confirmRouterRestored(); break
-      case 'router_dhcp_restored': await api.restoreMacDHCP(); break
+      switch (recoveryNextAction(current)) {
+      case 'prepare': await api.prepareRecovery(); break
+      case 'apply_static': await api.applyStatic(); break
+      case 'probe_dhcp': await api.probeDHCP(); break
+      case 'start_gateway': await waitForOperation((await api.gateway('start')).id); break
+      case 'validate_client': await api.validateClient(clientIPv4, ipv6Acknowledged); break
+      case 'stop_gateway': await waitForOperation((await api.gateway('stop')).id); break
+      case 'confirm_router_restored': await api.confirmRouterRestored(); break
+      case 'restore_mac_dhcp': await api.restoreMacDHCP(); break
       }
       await onChanged()
       // `networksetup -setdhcp` returns before macOS necessarily exposes the
@@ -413,7 +410,7 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
         {current === 'router_dhcp_restored' && <div className="notice">已经检测到 DHCP OFFER。你可以把 Mac 恢复为自动 DHCP，也可以保留当前静态 IPv4 后结束流程。</div>}
         {current === 'complete_static' && <div className="notice">恢复流程已结束，Mac 仍使用静态 IPv4；路由器 DHCP 与其他客户端的自动获取能力没有在这条路径中验证。</div>}
         <div className="recovery-actions">
-          <button ref={gatewayControlRef} id="gateway-control" className="primary" disabled={busy || configDirty || blockedByPlan || (current === 'gateway_active' && (!clientIPv4 || !clientConfirmed || Boolean(plan?.snapshot.ipv6_default && !ipv6Acknowledged)))} onClick={() => void advance()}>{busy ? '正在验证…' : actionLabel(current)}</button>
+          <button ref={gatewayControlRef} id="gateway-control" className="primary" disabled={busy || configDirty || blockedByPlan || (current === 'gateway_active' && (!clientIPv4 || !clientConfirmed || Boolean(plan?.snapshot.ipv6_default && !ipv6Acknowledged)))} onClick={() => void advance()}>{busy ? '正在验证…' : recoveryActionLabel(current)}</button>
           {current === 'prepared' && <button className="danger" disabled={busy} onClick={() => void discardRecovery()}>放弃恢复并销毁资料</button>}
           {(current === 'mac_static' || current === 'router_dhcp_disabled_confirmed') && <button className="danger" disabled={busy} onClick={() => void abandonTakeover()}>放弃 DHCP 接管</button>}
           {current === 'gateway_active' && <button className="danger" disabled={busy} onClick={() => void skipClientValidation()}>跳过客户端验收</button>}
@@ -494,19 +491,4 @@ function ConfigSwitch({ label, accessibleLabel = label, checked, disabled = fals
     <span className="config-switch-copy"><strong>{label}</strong><small>{status}</small></span>
     <span className="config-switch-toggle" aria-hidden="true"><i /></span>
   </label>
-}
-
-function actionLabel(stage: string) {
-  switch (stage) {
-  case 'idle': case 'complete': case 'complete_static': return '保存网络快照与离线恢复卡'
-  case 'prepared': return '将 Mac 切换为固定 IPv4'
-  case 'mac_static': return '已关闭路由器 DHCP，执行 OFFER 探测'
-  case 'router_dhcp_disabled_confirmed': return '启动 OpenSurge'
-  case 'gateway_active': return '验证客户端 DHCP、DNS 与 TUN 证据'
-  case 'client_validated': return '停止 OpenSurge'
-  case 'client_validation_skipped': return '停止 OpenSurge'
-  case 'gateway_stopped_waiting_router_dhcp': return '路由器 DHCP 已恢复，执行 OFFER 探测'
-  case 'router_dhcp_restored': return '将 Mac 恢复为自动 DHCP'
-  default: return recoveryLabel(stage)
-  }
 }

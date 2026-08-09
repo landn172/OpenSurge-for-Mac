@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { Empty, PageHeader, StatusDot } from '../components/Common'
-import { recoveryLabel, statusLabel } from '../status'
+import { recoveryLabel } from '../recovery'
+import { statusLabel } from '../status'
 import { formatBytes } from '../trafficFormat'
 import type { Diagnostics, DoctorCheck, Overview } from '../types'
 
