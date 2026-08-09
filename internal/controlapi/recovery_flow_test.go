@@ -1,0 +1,420 @@
+package controlapi
+
+import (
+	"errors"
+	"net/http"
+	"strings"
+	"testing"
+
+	"open-mihomo-gateway/internal/macosnetwork"
+)
+
+func stateAt(stage string) RecoveryState {
+	return RecoveryState{SchemaVersion: SchemaVersion, Stage: stage}
+}
+
+func stateAtWithSnapshot(stage string) RecoveryState {
+	state := stateAt(stage)
+	state.NetworkSnapshot = &macosnetwork.Snapshot{
+		NetworkService: "Wi-Fi",
+		Interface:      "en0",
+		IPv4:           "192.168.1.20",
+		SubnetMask:     "255.255.255.0",
+		Router:         "192.168.1.1",
+	}
+	return state
+}
+
+func requireRuleError(t *testing.T, err error, status int, code string) {
+	t.Helper()
+	var ruleErr *recoveryRuleError
+	if !errors.As(err, &ruleErr) {
+		t.Fatalf("expected a recovery rule error, got %v", err)
+	}
+	if ruleErr.Status != status || ruleErr.Code != code {
+		t.Fatalf("expected %d/%s, got %d/%s (%s)", status, code, ruleErr.Status, ruleErr.Code, ruleErr.Message)
+	}
+	if ruleErr.Message == "" {
+		t.Fatal("rule error must carry an operator-facing message")
+	}
+}
+
+// Every stage precondition in the flow, as data. This is the table the removed
+// allowedRecoveryTransition contradicted; it now matches the handlers.
+func TestRecoveryStagePreconditions(t *testing.T) {
+	allStages := []string{
+		RecoveryIdle, RecoveryPrepared, RecoveryMacStatic, RecoveryRouterDHCPDisabledConfirmed,
+		RecoveryGatewayActive, RecoveryClientValidated, RecoveryClientValidationSkipped,
+		RecoveryGatewayStopped, RecoveryRouterDHCPRestored, RecoveryComplete, RecoveryCompleteStatic,
+	}
+
+	cases := []struct {
+		kind    recoveryIntentKind
+		allowed []string
+	}{
+		{intentDiscard, []string{RecoveryPrepared}},
+		{intentApplyStatic, []string{RecoveryPrepared}},
+		{intentProbeRouterDHCP, []string{RecoveryMacStatic}},
+		{intentAbandonTakeover, []string{RecoveryMacStatic, RecoveryRouterDHCPDisabledConfirmed}},
+		{intentClientValidated, []string{RecoveryGatewayActive}},
+		{intentClientValidationSkip, []string{RecoveryGatewayActive}},
+		{intentRouterRestored, []string{RecoveryGatewayStopped}},
+		{intentManualFinish, []string{RecoveryGatewayStopped}},
+		{intentKeepStatic, []string{RecoveryGatewayStopped, RecoveryRouterDHCPRestored}},
+		{intentRestoreDHCP, []string{RecoveryRouterDHCPRestored}},
+	}
+
+	for _, tc := range cases {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			allowed := map[string]bool{}
+			for _, stage := range tc.allowed {
+				allowed[stage] = true
+			}
+			for _, stage := range allStages {
+				err := checkRecoveryStage(stateAtWithSnapshot(stage), tc.kind)
+				if allowed[stage] && err != nil {
+					t.Errorf("stage %s should be allowed, got %v", stage, err)
+				}
+				if !allowed[stage] && err == nil {
+					t.Errorf("stage %s should be rejected", stage)
+				}
+			}
+		})
+	}
+}
+
+// prepare and set-notes deliberately have no stage precondition today.
+func TestRecoveryIntentsWithoutStagePrecondition(t *testing.T) {
+	for _, kind := range []recoveryIntentKind{intentPrepare, intentSetNotes} {
+		for _, stage := range []string{RecoveryIdle, RecoveryGatewayActive, RecoveryComplete} {
+			if err := checkRecoveryStage(stateAt(stage), kind); err != nil {
+				t.Errorf("%s at %s: unexpected precondition %v", kind, stage, err)
+			}
+		}
+	}
+}
+
+func TestRecoveryPreconditionsRequireNetworkSnapshot(t *testing.T) {
+	fused := []recoveryIntentKind{intentApplyStatic, intentRouterRestored, intentManualFinish, intentKeepStatic, intentRestoreDHCP}
+	stages := map[recoveryIntentKind]string{
+		intentApplyStatic:    RecoveryPrepared,
+		intentRouterRestored: RecoveryGatewayStopped,
+		intentManualFinish:   RecoveryGatewayStopped,
+		intentKeepStatic:     RecoveryGatewayStopped,
+		intentRestoreDHCP:    RecoveryRouterDHCPRestored,
+	}
+	for _, kind := range fused {
+		err := checkRecoveryStage(stateAt(stages[kind]), kind)
+		requireRuleError(t, err, http.StatusConflict, "recovery_precondition")
+	}
+
+	// abandon-takeover reports the missing snapshot separately, after the stage.
+	err := checkRecoveryStage(stateAt(RecoveryMacStatic), intentAbandonTakeover)
+	requireRuleError(t, err, http.StatusConflict, "recovery_snapshot_missing")
+	err = checkRecoveryStage(stateAt(RecoveryIdle), intentAbandonTakeover)
+	requireRuleError(t, err, http.StatusConflict, "recovery_precondition")
+}
+
+// The order between the stage check and the operator confirmation check differs
+// per intent, and the difference is observable as a different status code.
+func TestRecoveryConfirmationOrdering(t *testing.T) {
+	cases := []struct {
+		name   string
+		state  RecoveryState
+		intent recoveryIntent
+		status int
+		code   string
+	}{
+		{
+			name:   "client validation checks stage before confirmations",
+			state:  stateAtWithSnapshot(RecoveryComplete),
+			intent: recoveryIntent{Kind: intentClientValidated},
+			status: http.StatusConflict,
+			code:   "recovery_precondition",
+		},
+		{
+			name:   "client validation skip checks confirmations before stage",
+			state:  stateAtWithSnapshot(RecoveryComplete),
+			intent: recoveryIntent{Kind: intentClientValidationSkip},
+			status: http.StatusUnprocessableEntity,
+			code:   "skip_confirmation_required",
+		},
+		{
+			name:   "manual finish checks confirmations before stage",
+			state:  stateAtWithSnapshot(RecoveryComplete),
+			intent: recoveryIntent{Kind: intentManualFinish},
+			status: http.StatusUnprocessableEntity,
+			code:   "manual_confirmation_required",
+		},
+		{
+			name:   "keep static checks confirmations before stage",
+			state:  stateAtWithSnapshot(RecoveryComplete),
+			intent: recoveryIntent{Kind: intentKeepStatic},
+			status: http.StatusUnprocessableEntity,
+			code:   "keep_static_confirmation_required",
+		},
+		{
+			name:   "client validation requires gateway and proxy confirmation",
+			state:  stateAtWithSnapshot(RecoveryGatewayActive),
+			intent: recoveryIntent{Kind: intentClientValidated, GatewayDNSConfirmed: true},
+			status: http.StatusUnprocessableEntity,
+			code:   "client_confirmation_required",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requireRuleError(t, checkRecovery(tc.state, tc.intent), tc.status, tc.code)
+		})
+	}
+}
+
+func TestRecoveryIPv6WarningOnlyWhenSnapshotDefaultsToIPv6(t *testing.T) {
+	intent := recoveryIntent{Kind: intentClientValidated, GatewayDNSConfirmed: true, NoExplicitProxyConfirmed: true}
+
+	state := stateAtWithSnapshot(RecoveryGatewayActive)
+	if err := checkRecovery(state, intent); err != nil {
+		t.Fatalf("no IPv6 default should not require acknowledgement: %v", err)
+	}
+
+	state.NetworkSnapshot.IPv6Default = true
+	requireRuleError(t, checkRecovery(state, intent), http.StatusUnprocessableEntity, "ipv6_warning_unacknowledged")
+
+	intent.IPv6BypassWarningConfirmed = true
+	if err := checkRecovery(state, intent); err != nil {
+		t.Fatalf("acknowledged IPv6 warning should pass: %v", err)
+	}
+}
+
+// Transitions whose target stage depends on the outcome of the network effect
+// the handler already ran.
+func TestRecoveryTransitionsBranchOnProbeOutcome(t *testing.T) {
+	cases := []struct {
+		name         string
+		state        RecoveryState
+		intent       recoveryIntent
+		wantStage    string
+		wantRequired bool
+		wantNote     bool
+		wantStatus   int
+		wantCode     string
+	}{
+		{
+			name:       "competing DHCP blocks the takeover confirmation",
+			state:      stateAtWithSnapshot(RecoveryMacStatic),
+			intent:     recoveryIntent{Kind: intentProbeRouterDHCP, DHCPServers: []string{"192.168.1.1"}},
+			wantStatus: http.StatusConflict,
+			wantCode:   "competing_dhcp",
+		},
+		{
+			name:         "a silent LAN confirms router DHCP is disabled",
+			state:        stateAtWithSnapshot(RecoveryMacStatic),
+			intent:       recoveryIntent{Kind: intentProbeRouterDHCP},
+			wantStage:    RecoveryRouterDHCPDisabledConfirmed,
+			wantRequired: true,
+		},
+		{
+			name:         "abandoning with an answering server restores DHCP",
+			state:        stateAtWithSnapshot(RecoveryMacStatic),
+			intent:       recoveryIntent{Kind: intentAbandonTakeover, DHCPServers: []string{"192.168.1.1"}},
+			wantStage:    RecoveryComplete,
+			wantRequired: false,
+			wantNote:     true,
+		},
+		{
+			name:         "abandoning with no answer ends on static IPv4",
+			state:        stateAtWithSnapshot(RecoveryMacStatic),
+			intent:       recoveryIntent{Kind: intentAbandonTakeover},
+			wantStage:    RecoveryCompleteStatic,
+			wantRequired: false,
+			wantNote:     true,
+		},
+		{
+			name:       "router restore needs an actual OFFER",
+			state:      stateAtWithSnapshot(RecoveryGatewayStopped),
+			intent:     recoveryIntent{Kind: intentRouterRestored},
+			wantStatus: http.StatusConflict,
+			wantCode:   "router_dhcp_missing",
+		},
+		{
+			name:         "an answering router advances to restored",
+			state:        stateAtWithSnapshot(RecoveryGatewayStopped),
+			intent:       recoveryIntent{Kind: intentRouterRestored, DHCPServers: []string{"192.168.1.1"}},
+			wantStage:    RecoveryRouterDHCPRestored,
+			wantRequired: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			next, err := advanceRecovery(tc.state, tc.intent)
+			if tc.wantCode != "" {
+				requireRuleError(t, err, tc.wantStatus, tc.wantCode)
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if next.Stage != tc.wantStage {
+				t.Errorf("stage: want %s, got %s", tc.wantStage, next.Stage)
+			}
+			if next.Required != tc.wantRequired {
+				t.Errorf("required: want %v, got %v", tc.wantRequired, next.Required)
+			}
+			if tc.wantNote && next.RecoveryNotes == "" {
+				t.Error("expected an operator note to be recorded")
+			}
+		})
+	}
+}
+
+func TestRecoveryTerminalTransitions(t *testing.T) {
+	cases := []struct {
+		name         string
+		state        RecoveryState
+		intent       recoveryIntent
+		wantStage    string
+		wantRequired bool
+	}{
+		{
+			name:         "apply static",
+			state:        stateAtWithSnapshot(RecoveryPrepared),
+			intent:       recoveryIntent{Kind: intentApplyStatic},
+			wantStage:    RecoveryMacStatic,
+			wantRequired: true,
+		},
+		{
+			name:         "client validated",
+			state:        stateAtWithSnapshot(RecoveryGatewayActive),
+			intent:       recoveryIntent{Kind: intentClientValidated, ClientIPv4: "192.168.1.120", GatewayDNSConfirmed: true, NoExplicitProxyConfirmed: true},
+			wantStage:    RecoveryClientValidated,
+			wantRequired: true,
+		},
+		{
+			name:         "client validation skipped",
+			state:        stateAtWithSnapshot(RecoveryGatewayActive),
+			intent:       recoveryIntent{Kind: intentClientValidationSkip, SkipConfirmed: true},
+			wantStage:    RecoveryClientValidationSkipped,
+			wantRequired: true,
+		},
+		{
+			name:         "manual finish",
+			state:        stateAtWithSnapshot(RecoveryGatewayStopped),
+			intent:       recoveryIntent{Kind: intentManualFinish, RouterDHCPRestoredConfirmed: true},
+			wantStage:    RecoveryComplete,
+			wantRequired: false,
+		},
+		{
+			name:         "keep static from gateway stopped",
+			state:        stateAtWithSnapshot(RecoveryGatewayStopped),
+			intent:       recoveryIntent{Kind: intentKeepStatic, KeepStaticConfirmed: true},
+			wantStage:    RecoveryCompleteStatic,
+			wantRequired: false,
+		},
+		{
+			name:         "keep static from router restored",
+			state:        stateAtWithSnapshot(RecoveryRouterDHCPRestored),
+			intent:       recoveryIntent{Kind: intentKeepStatic, KeepStaticConfirmed: true},
+			wantStage:    RecoveryCompleteStatic,
+			wantRequired: false,
+		},
+		{
+			name:         "restore DHCP",
+			state:        stateAtWithSnapshot(RecoveryRouterDHCPRestored),
+			intent:       recoveryIntent{Kind: intentRestoreDHCP},
+			wantStage:    RecoveryComplete,
+			wantRequired: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			next, err := advanceRecovery(tc.state, tc.intent)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if next.Stage != tc.wantStage {
+				t.Errorf("stage: want %s, got %s", tc.wantStage, next.Stage)
+			}
+			if next.Required != tc.wantRequired {
+				t.Errorf("required: want %v, got %v", tc.wantRequired, next.Required)
+			}
+		})
+	}
+}
+
+func TestRecoveryClientValidationReplacesNotesAndSkipAppends(t *testing.T) {
+	state := stateAtWithSnapshot(RecoveryGatewayActive)
+	state.RecoveryNotes = "earlier note"
+
+	validated, err := advanceRecovery(state, recoveryIntent{
+		Kind: intentClientValidated, ClientIPv4: "192.168.1.120",
+		GatewayDNSConfirmed: true, NoExplicitProxyConfirmed: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if validated.RecoveryNotes == "" || validated.ClientValidationSkipped {
+		t.Fatalf("unexpected validated state: %+v", validated)
+	}
+	if got := validated.RecoveryNotes; got == "earlier note" || strings.Contains(got, "earlier note") {
+		t.Errorf("client acceptance replaces notes verbatim, got %q", got)
+	}
+
+	skipped, err := advanceRecovery(state, recoveryIntent{Kind: intentClientValidationSkip, SkipConfirmed: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !skipped.ClientValidationSkipped {
+		t.Error("skip must record that no client evidence was collected")
+	}
+	if !strings.Contains(skipped.RecoveryNotes, "earlier note") {
+		t.Errorf("skip appends to notes, got %q", skipped.RecoveryNotes)
+	}
+}
+
+func TestRecoveryPrepareBuildsStateFromSnapshot(t *testing.T) {
+	snapshot := macosnetwork.Snapshot{
+		NetworkService: "Wi-Fi", Interface: "en0",
+		IPv4: "192.168.1.20", SubnetMask: "255.255.255.0", Router: "192.168.1.1",
+	}
+	next, err := advanceRecovery(RecoveryState{}, recoveryIntent{
+		Kind: intentPrepare, Topology: "same_wifi_dhcp", Snapshot: &snapshot,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if next.Stage != RecoveryPrepared || !next.Required {
+		t.Fatalf("unexpected prepared state: %+v", next)
+	}
+	if next.Topology != "same_wifi_dhcp" || next.NetworkService != "Wi-Fi" ||
+		next.OriginalIPv4 != "192.168.1.20" || next.OriginalRouter != "192.168.1.1" {
+		t.Fatalf("prepared state must mirror the snapshot: %+v", next)
+	}
+	if next.NetworkSnapshot == nil {
+		t.Fatal("prepared state must persist the snapshot")
+	}
+}
+
+// Notes may be replaced at any stage, but never the stage itself.
+func TestRecoverySetNotesNeverMovesTheStage(t *testing.T) {
+	for _, stage := range []string{RecoveryIdle, RecoveryGatewayActive, RecoveryGatewayStopped} {
+		state := stateAt(stage)
+		next, err := advanceRecovery(state, recoveryIntent{Kind: intentSetNotes, Notes: "operator note"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if next.Stage != stage {
+			t.Errorf("stage moved from %s to %s", stage, next.Stage)
+		}
+		if next.RecoveryNotes != "operator note" {
+			t.Errorf("notes: got %q", next.RecoveryNotes)
+		}
+	}
+}
+
+func TestUnknownRecoveryIntentIsRejected(t *testing.T) {
+	if _, err := advanceRecovery(stateAt(RecoveryIdle), recoveryIntent{Kind: "not_a_real_intent"}); err == nil {
+		t.Fatal("expected an unknown intent to be rejected")
+	}
+}
