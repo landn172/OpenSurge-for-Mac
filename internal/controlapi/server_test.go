@@ -1407,7 +1407,10 @@ func TestClientAcceptanceRequiresLeaseDNSAndTUNEvidence(t *testing.T) {
 	if err := os.WriteFile(paths.MihomoLog, []byte("[TCP] 192.168.1.121:50000 --> example.com:443 using DIRECT\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := server.store.SaveRecovery(RecoveryState{Stage: RecoveryGatewayActive, Required: true}); err != nil {
+	if err := server.store.SaveRecovery(RecoveryState{
+		Stage: RecoveryGatewayActive, Required: true,
+		RecoveryNotes: "gateway start failed and runtime changes were rolled back",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/client-validated", []byte(`{"client_ipv4":"192.168.1.121","gateway_dns_confirmed":true,"no_explicit_proxy_confirmed":true,"ipv6_bypass_warning_confirmed":false}`))
@@ -1417,6 +1420,12 @@ func TestClientAcceptanceRequiresLeaseDNSAndTUNEvidence(t *testing.T) {
 	state, _ := server.store.Recovery()
 	if state.Stage != RecoveryClientValidated {
 		t.Fatalf("state=%#v", state)
+	}
+	if !strings.Contains(state.RecoveryNotes, "192.168.1.121") {
+		t.Fatalf("client acceptance evidence missing: %q", state.RecoveryNotes)
+	}
+	if !strings.Contains(state.RecoveryNotes, "runtime changes were rolled back") {
+		t.Fatalf("client acceptance dropped an earlier operator note: %q", state.RecoveryNotes)
 	}
 }
 

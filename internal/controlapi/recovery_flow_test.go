@@ -354,7 +354,9 @@ func TestRecoveryTerminalTransitions(t *testing.T) {
 	}
 }
 
-func TestRecoveryClientValidationReplacesNotesAndSkipAppends(t *testing.T) {
+// Every transition appends to the operator notes; none of them may drop what
+// an earlier stage recorded.
+func TestRecoveryClientValidationAndSkipBothAppendNotes(t *testing.T) {
 	state := stateAtWithSnapshot(RecoveryGatewayActive)
 	state.RecoveryNotes = "earlier note"
 
@@ -365,11 +367,14 @@ func TestRecoveryClientValidationReplacesNotesAndSkipAppends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if validated.RecoveryNotes == "" || validated.ClientValidationSkipped {
+	if validated.ClientValidationSkipped {
 		t.Fatalf("unexpected validated state: %+v", validated)
 	}
-	if got := validated.RecoveryNotes; got == "earlier note" || strings.Contains(got, "earlier note") {
-		t.Errorf("client acceptance replaces notes verbatim, got %q", got)
+	if !strings.Contains(validated.RecoveryNotes, "earlier note") {
+		t.Errorf("client acceptance dropped an earlier note, got %q", validated.RecoveryNotes)
+	}
+	if !strings.Contains(validated.RecoveryNotes, "192.168.1.120") {
+		t.Errorf("client acceptance must record the validated client, got %q", validated.RecoveryNotes)
 	}
 
 	skipped, err := advanceRecovery(state, recoveryIntent{Kind: intentClientValidationSkip, SkipConfirmed: true})

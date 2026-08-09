@@ -414,7 +414,7 @@ func advanceRecovery(state RecoveryState, intent recoveryIntent) (RecoveryState,
 	case intentClientValidated:
 		state.Stage = RecoveryClientValidated
 		state.ClientValidationSkipped = false
-		state.RecoveryNotes = fmt.Sprintf("client %s: DHCP ACK, DNS and TUN source observed; gateway/DNS and no explicit proxy confirmed", intent.ClientIPv4)
+		appendRecoveryNote(&state, fmt.Sprintf("client %s: DHCP ACK, DNS and TUN source observed; gateway/DNS and no explicit proxy confirmed", intent.ClientIPv4))
 		state.Required = true
 
 	case intentClientValidationSkip:
