@@ -34,6 +34,12 @@ const (
 	intentManualFinish         recoveryIntentKind = "manual_finish"
 	intentKeepStatic           recoveryIntentKind = "keep_static"
 	intentRestoreDHCP          recoveryIntentKind = "restore_dhcp"
+
+	// Outcomes of an asynchronous gateway operation.
+	intentGatewayStarted recoveryIntentKind = "gateway_started"
+	intentGatewayStopped recoveryIntentKind = "gateway_stopped"
+	intentStartFailed    recoveryIntentKind = "start_failed"
+	intentReloadFailed   recoveryIntentKind = "reload_failed"
 )
 
 // recoveryIntent names one recovery action plus everything the rules need to
@@ -63,6 +69,10 @@ type recoveryIntent struct {
 
 	// Notes replaces the persisted operator notes verbatim.
 	Notes string
+
+	// FailureDetail is appended to the operator notes when an asynchronous
+	// gateway operation fails.
+	FailureDetail string
 }
 
 // recoveryRuleError carries the exact status, code and message a rejected
@@ -151,6 +161,13 @@ var recoveryRules = map[recoveryIntentKind]recoveryRule{
 		requireSnapshot: true,
 		message:         "verify restored router DHCP before restoring the Mac",
 	},
+	intentGatewayStarted: {},
+	intentGatewayStopped: {},
+	intentStartFailed: {
+		from:    []string{RecoveryRouterDHCPDisabledConfirmed},
+		message: "a rolled-back start is only recorded while router DHCP is confirmed disabled",
+	},
+	intentReloadFailed: {},
 }
 
 // checkRecovery reports whether an intent may run against the current state.
@@ -310,8 +327,38 @@ func advanceRecovery(state RecoveryState, intent recoveryIntent) (RecoveryState,
 	case intentRestoreDHCP:
 		state.Stage, state.Required = RecoveryComplete, false
 
+	case intentGatewayStarted:
+		state.Topology = intent.Topology
+		state.Stage = RecoveryGatewayActive
+		state.ClientValidationSkipped = false
+		state.Required = true
+
+	case intentGatewayStopped:
+		state.Topology = intent.Topology
+		state.Stage = RecoveryGatewayStopped
+		state.Required = true
+
+	case intentStartFailed:
+		state.Required = true
+		appendRecoveryNote(&state, "gateway start failed and runtime changes were rolled back; router DHCP may remain disabled; resolve the error and retry, or abandon takeover and recover the LAN: "+intent.FailureDetail)
+
+	case intentReloadFailed:
+		state.Topology = intent.Topology
+		state.Stage = RecoveryRouterDHCPDisabledConfirmed
+		state.Required = true
+		appendRecoveryNote(&state, "gateway reload failed after services stopped; router DHCP remains disabled; retry start or recover the LAN")
 	}
 	return state, nil
+}
+
+// applyRecovery advances and persists the state without an HTTP response, for
+// the asynchronous operation paths.
+func (s *Server) applyRecovery(state RecoveryState, intent recoveryIntent) error {
+	next, err := advanceRecovery(state, intent)
+	if err != nil {
+		return err
+	}
+	return s.store.SaveRecovery(next)
 }
 
 // gateRecoveryIntent reports the precondition failure and returns false when an

@@ -723,23 +723,19 @@ func (s *Server) runOperation(op Operation, topology string, recoveryBefore Reco
 	} else {
 		op.State = "succeeded"
 		if topology == config.GatewayModeSameWiFiDHCP && (op.Kind == "start" || op.Kind == "stop") {
-			recovery, _ := s.store.Recovery()
-			recovery.Topology = topology
+			kind := intentGatewayStopped
 			if op.Kind == "start" {
-				recovery.Stage = RecoveryGatewayActive
-				recovery.ClientValidationSkipped = false
-			} else {
-				recovery.Stage = RecoveryGatewayStopped
+				kind = intentGatewayStarted
 			}
-			recovery.Required = true
-			_ = s.store.SaveRecovery(recovery)
+			recovery, _ := s.store.Recovery()
+			_ = s.applyRecovery(recovery, recoveryIntent{Kind: kind, Topology: topology})
 		}
 	}
 	_ = s.store.SaveOperation(op)
 }
 
 func (s *Server) recordStartRecoveryFailure(topology string, recoveryBefore RecoveryState, startErr error) {
-	if topology != config.GatewayModeSameWiFiDHCP || recoveryBefore.Stage != RecoveryRouterDHCPDisabledConfirmed {
+	if topology != config.GatewayModeSameWiFiDHCP {
 		return
 	}
 	cfg, err := config.LoadRuntime(s.configPath)
@@ -749,9 +745,8 @@ func (s *Server) recordStartRecoveryFailure(topology string, recoveryBefore Reco
 	if _, exists, stateErr := runtime.LoadState(runtime.NewPaths(cfg).StateFile); stateErr != nil || exists {
 		return
 	}
-	recoveryBefore.Required = true
-	appendRecoveryNote(&recoveryBefore, "gateway start failed and runtime changes were rolled back; router DHCP may remain disabled; resolve the error and retry, or abandon takeover and recover the LAN: "+startErr.Error())
-	_ = s.store.SaveRecovery(recoveryBefore)
+	// A stage that may not record a rolled-back start is rejected by the flow.
+	_ = s.applyRecovery(recoveryBefore, recoveryIntent{Kind: intentStartFailed, FailureDetail: startErr.Error()})
 }
 
 func (s *Server) recordReloadRecoveryFailure(topology string, recoveryBefore RecoveryState, reloadErr error) {
@@ -767,14 +762,7 @@ func (s *Server) recordReloadRecoveryFailure(topology string, recoveryBefore Rec
 	if stateErr != nil || (!restartFailed && exists) {
 		return
 	}
-	recoveryBefore.Topology = topology
-	recoveryBefore.Stage = RecoveryRouterDHCPDisabledConfirmed
-	recoveryBefore.Required = true
-	if recoveryBefore.RecoveryNotes != "" {
-		recoveryBefore.RecoveryNotes += "; "
-	}
-	recoveryBefore.RecoveryNotes += "gateway reload failed after services stopped; router DHCP remains disabled; retry start or recover the LAN"
-	_ = s.store.SaveRecovery(recoveryBefore)
+	_ = s.applyRecovery(recoveryBefore, recoveryIntent{Kind: intentReloadFailed, Topology: topology})
 }
 
 func (s *Server) handleOperation(w http.ResponseWriter, r *http.Request) {

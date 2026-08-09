@@ -413,6 +413,70 @@ func TestRecoverySetNotesNeverMovesTheStage(t *testing.T) {
 	}
 }
 
+// Outcomes of an asynchronous gateway operation.
+func TestRecoveryOperationOutcomes(t *testing.T) {
+	t.Run("start clears a previous validation waiver", func(t *testing.T) {
+		state := stateAtWithSnapshot(RecoveryRouterDHCPDisabledConfirmed)
+		state.ClientValidationSkipped = true
+		next, err := advanceRecovery(state, recoveryIntent{Kind: intentGatewayStarted, Topology: "same_wifi_dhcp"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if next.Stage != RecoveryGatewayActive || !next.Required || next.ClientValidationSkipped {
+			t.Fatalf("unexpected started state: %+v", next)
+		}
+		if next.Topology != "same_wifi_dhcp" {
+			t.Errorf("topology: got %q", next.Topology)
+		}
+	})
+
+	t.Run("stop keeps a recorded validation waiver", func(t *testing.T) {
+		state := stateAtWithSnapshot(RecoveryClientValidationSkipped)
+		state.ClientValidationSkipped = true
+		next, err := advanceRecovery(state, recoveryIntent{Kind: intentGatewayStopped, Topology: "same_wifi_dhcp"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if next.Stage != RecoveryGatewayStopped || !next.Required || !next.ClientValidationSkipped {
+			t.Fatalf("unexpected stopped state: %+v", next)
+		}
+	})
+
+	t.Run("a rolled-back start keeps its stage and warns", func(t *testing.T) {
+		state := stateAtWithSnapshot(RecoveryRouterDHCPDisabledConfirmed)
+		next, err := advanceRecovery(state, recoveryIntent{Kind: intentStartFailed, FailureDetail: "dnsmasq refused to start"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if next.Stage != RecoveryRouterDHCPDisabledConfirmed || !next.Required {
+			t.Fatalf("unexpected failed-start state: %+v", next)
+		}
+		if !strings.Contains(next.RecoveryNotes, "dnsmasq refused to start") {
+			t.Errorf("failure detail must reach the operator note, got %q", next.RecoveryNotes)
+		}
+	})
+
+	t.Run("a rolled-back start is only recorded from the confirmed stage", func(t *testing.T) {
+		for _, stage := range []string{RecoveryIdle, RecoveryGatewayActive, RecoveryComplete} {
+			_, err := advanceRecovery(stateAtWithSnapshot(stage), recoveryIntent{Kind: intentStartFailed})
+			requireRuleError(t, err, http.StatusConflict, "recovery_precondition")
+		}
+	})
+
+	t.Run("a failed reload returns to the restartable stage", func(t *testing.T) {
+		next, err := advanceRecovery(stateAtWithSnapshot(RecoveryGatewayActive), recoveryIntent{Kind: intentReloadFailed, Topology: "same_wifi_dhcp"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if next.Stage != RecoveryRouterDHCPDisabledConfirmed || !next.Required {
+			t.Fatalf("unexpected failed-reload state: %+v", next)
+		}
+		if next.RecoveryNotes == "" {
+			t.Error("expected an operator note")
+		}
+	})
+}
+
 func TestUnknownRecoveryIntentIsRejected(t *testing.T) {
 	if _, err := advanceRecovery(stateAt(RecoveryIdle), recoveryIntent{Kind: "not_a_real_intent"}); err == nil {
 		t.Fatal("expected an unknown intent to be rejected")
