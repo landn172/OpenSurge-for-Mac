@@ -1030,7 +1030,8 @@ func (s *Server) handleRecoveryPrepare(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "static_config_invalid", fmt.Sprintf("configured Mac LAN IPv4 %s is incompatible with router %s and subnet mask %s: %v", cfg.Gateway.LANIP, snapshot.Router, snapshot.SubnetMask, err))
 		return
 	}
-	state, ok := s.commitRecovery(w, RecoveryState{}, recoveryIntent{Kind: intentPrepare, Topology: cfg.Gateway.Mode, Snapshot: &snapshot})
+	current, _ := s.store.Recovery()
+	state, ok := s.commitRecovery(w, current, recoveryIntent{Kind: intentPrepare, Topology: cfg.Gateway.Mode, Snapshot: &snapshot})
 	if !ok {
 		return
 	}

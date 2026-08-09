@@ -110,7 +110,15 @@ type recoveryRule struct {
 }
 
 var recoveryRules = map[recoveryIntentKind]recoveryRule{
-	intentPrepare:  {},
+	// Preparing re-runs network discovery and overwrites the persisted
+	// snapshot, so it is only safe while the Mac, the router and DHCP are
+	// still untouched. From mac_static onward discovery would return the
+	// static configuration the operator just applied and destroy the record
+	// of what to restore to.
+	intentPrepare: {
+		from:    []string{RecoveryIdle, RecoveryPrepared, RecoveryComplete, RecoveryCompleteStatic},
+		message: "network recovery data can only be prepared before the Mac leaves automatic DHCP",
+	},
 	intentSetNotes: {},
 	intentDiscard: {
 		from:    []string{RecoveryPrepared},

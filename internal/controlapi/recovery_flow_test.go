@@ -52,6 +52,7 @@ func TestRecoveryStagePreconditions(t *testing.T) {
 		kind    recoveryIntentKind
 		allowed []string
 	}{
+		{intentPrepare, []string{RecoveryIdle, RecoveryPrepared, RecoveryComplete, RecoveryCompleteStatic}},
 		{intentDiscard, []string{RecoveryPrepared}},
 		{intentApplyStatic, []string{RecoveryPrepared}},
 		{intentProbeRouterDHCP, []string{RecoveryMacStatic}},
@@ -83,14 +84,24 @@ func TestRecoveryStagePreconditions(t *testing.T) {
 	}
 }
 
-// prepare and set-notes deliberately have no stage precondition today.
-func TestRecoveryIntentsWithoutStagePrecondition(t *testing.T) {
-	for _, kind := range []recoveryIntentKind{intentPrepare, intentSetNotes} {
-		for _, stage := range []string{RecoveryIdle, RecoveryGatewayActive, RecoveryComplete} {
-			if err := checkRecoveryStage(stateAt(stage), kind); err != nil {
-				t.Errorf("%s at %s: unexpected precondition %v", kind, stage, err)
-			}
+// Operator notes may be recorded at any stage; the stage itself never moves.
+func TestRecoverySetNotesHasNoStagePrecondition(t *testing.T) {
+	for _, stage := range []string{RecoveryIdle, RecoveryGatewayActive, RecoveryComplete} {
+		if err := checkRecoveryStage(stateAt(stage), intentSetNotes); err != nil {
+			t.Errorf("set notes at %s: unexpected precondition %v", stage, err)
 		}
+	}
+}
+
+// Preparing after the Mac left automatic DHCP would overwrite the very record
+// the flow exists to restore from.
+func TestRecoveryPrepareRefusesToOverwriteAChangedNetwork(t *testing.T) {
+	for _, stage := range []string{
+		RecoveryMacStatic, RecoveryRouterDHCPDisabledConfirmed, RecoveryGatewayActive,
+		RecoveryClientValidated, RecoveryClientValidationSkipped,
+		RecoveryGatewayStopped, RecoveryRouterDHCPRestored,
+	} {
+		requireRuleError(t, checkRecoveryStage(stateAtWithSnapshot(stage), intentPrepare), http.StatusConflict, "recovery_precondition")
 	}
 }
 
@@ -378,7 +389,7 @@ func TestRecoveryPrepareBuildsStateFromSnapshot(t *testing.T) {
 		NetworkService: "Wi-Fi", Interface: "en0",
 		IPv4: "192.168.1.20", SubnetMask: "255.255.255.0", Router: "192.168.1.1",
 	}
-	next, err := advanceRecovery(RecoveryState{}, recoveryIntent{
+	next, err := advanceRecovery(stateAt(RecoveryIdle), recoveryIntent{
 		Kind: intentPrepare, Topology: "same_wifi_dhcp", Snapshot: &snapshot,
 	})
 	if err != nil {

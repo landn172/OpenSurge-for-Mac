@@ -382,6 +382,36 @@ func TestRecoveryPrepareRollsBackWhenOfflineCardCannotBeWritten(t *testing.T) {
 	}
 }
 
+func TestPrepareIsRejectedOnceTheMacLeftAutomaticDHCP(t *testing.T) {
+	server, _ := newTestServerWithNetwork(t)
+	if response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`)); response.Code != http.StatusOK {
+		t.Fatalf("prepare: %d %s", response.Code, response.Body.String())
+	}
+	before, _ := server.store.Recovery()
+	if response := performAuthorized(server, http.MethodPost, "/api/v1/network/apply-static", nil); response.Code != http.StatusOK {
+		t.Fatalf("apply static: %d %s", response.Code, response.Body.String())
+	}
+
+	// Re-running discovery here would return the static configuration the
+	// operator just applied and overwrite the only record of what to restore.
+	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("prepare after apply-static: %d %s", response.Code, response.Body.String())
+	}
+
+	state, _ := server.store.Recovery()
+	if state.Stage != RecoveryMacStatic || !state.Required {
+		t.Fatalf("recovery=%#v", state)
+	}
+	if state.NetworkSnapshot == nil {
+		t.Fatal("the persisted network snapshot was destroyed")
+	}
+	if state.OriginalIPv4 != before.OriginalIPv4 || state.OriginalRouter != before.OriginalRouter {
+		t.Fatalf("original network identity changed: %s/%s -> %s/%s",
+			before.OriginalIPv4, before.OriginalRouter, state.OriginalIPv4, state.OriginalRouter)
+	}
+}
+
 func TestPreparedRecoveryDiscardIsRejectedAfterNetworkChangesBegin(t *testing.T) {
 	server, _ := newTestServerWithNetwork(t)
 	if response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`)); response.Code != http.StatusOK {
