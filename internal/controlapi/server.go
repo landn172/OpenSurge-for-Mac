@@ -267,8 +267,7 @@ func (s *Server) handleControlConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recovery, _ := s.store.Recovery()
-	if recovery.Required && recovery.Stage != RecoveryPrepared {
-		writeError(w, http.StatusConflict, "recovery_required", "finish network recovery before editing topology")
+	if !s.gateRecovery(w, recovery, gateEditConfig) {
 		return
 	}
 	match := strings.Trim(r.Header.Get("If-Match"), `"`)
@@ -299,7 +298,7 @@ func (s *Server) handleControlConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "config_reload_failed", err.Error())
 		return
 	}
-	if recovery.Stage == RecoveryPrepared {
+	if recoveryNeedsCardDiscard(recovery) {
 		if err := s.store.DiscardPreparedRecovery(cfg.Gateway.Mode); err != nil {
 			writeError(w, http.StatusInternalServerError, "recovery_discard_failed", "configuration was saved but the prepared recovery card could not be discarded: "+err.Error())
 			return
@@ -649,8 +648,7 @@ func (s *Server) handleGatewayAction(w http.ResponseWriter, r *http.Request) {
 	}
 	recovery, _ := s.store.Recovery()
 	if action == "start" && cfg.Gateway.Mode == config.GatewayModeSameWiFiDHCP {
-		if recovery.Stage != RecoveryRouterDHCPDisabledConfirmed {
-			writeError(w, http.StatusConflict, "recovery_precondition", "same-LAN DHCP takeover requires persisted confirmation that router DHCP is disabled")
+		if !s.gateRecovery(w, recovery, gateStartGateway) {
 			return
 		}
 	}
@@ -664,8 +662,7 @@ func (s *Server) handleGatewayAction(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "gateway_not_running", "reload requires a running gateway; use start instead")
 			return
 		}
-		if cfg.Gateway.Mode == config.GatewayModeSameWiFiDHCP && recovery.Stage != RecoveryGatewayActive && recovery.Stage != RecoveryClientValidated && recovery.Stage != RecoveryClientValidationSkipped {
-			writeError(w, http.StatusConflict, "recovery_precondition", "same-LAN DHCP takeover can reload only while the gateway is active")
+		if cfg.Gateway.Mode == config.GatewayModeSameWiFiDHCP && !s.gateRecovery(w, recovery, gateReloadGateway) {
 			return
 		}
 	}
@@ -688,8 +685,7 @@ func (s *Server) handleGatewayAction(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "runtime_interrupted", "gateway runtime was interrupted by a system reboot; stop to clean stale state before starting again")
 			return
 		}
-		if cfg.Gateway.Mode == config.GatewayModeSameWiFiDHCP && recovery.Stage != RecoveryGatewayActive && recovery.Stage != RecoveryClientValidated && recovery.Stage != RecoveryClientValidationSkipped {
-			writeError(w, http.StatusConflict, "recovery_precondition", "same-LAN DHCP takeover can restart mihomo only while the gateway is active")
+		if cfg.Gateway.Mode == config.GatewayModeSameWiFiDHCP && !s.gateRecovery(w, recovery, gateRestartMihomo) {
 			return
 		}
 	}
@@ -816,8 +812,7 @@ func (s *Server) handleRecoveryCard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "recovery_read_failed", err.Error())
 		return
 	}
-	if state.NetworkSnapshot == nil || state.Stage == RecoveryIdle {
-		writeError(w, http.StatusNotFound, "recovery_card_missing", "no recovery card is available")
+	if !s.gateRecovery(w, state, gateReadCard) {
 		return
 	}
 	card, err := s.store.RecoveryCard()
@@ -1281,8 +1276,7 @@ func (s *Server) handleSourceApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recovery, _ := s.store.Recovery()
-	if gatewayActive && cfg.Gateway.Mode == config.GatewayModeSameWiFiDHCP && recovery.Stage != RecoveryGatewayActive && recovery.Stage != RecoveryClientValidated && recovery.Stage != RecoveryClientValidationSkipped {
-		writeError(w, http.StatusConflict, "recovery_precondition", "same-LAN DHCP takeover can apply a profile only while the gateway is active")
+	if gatewayActive && cfg.Gateway.Mode == config.GatewayModeSameWiFiDHCP && !s.gateRecovery(w, recovery, gateApplySource) {
 		return
 	}
 	match := strings.Trim(r.Header.Get("If-Match"), `"`)

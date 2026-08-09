@@ -212,6 +212,18 @@ Mac 执行 `networksetup -setdhcp` 后，DHCP 租约与 router 字段可能短�
 `gateway_stopped_waiting_router_dhcp` / `router_dhcp_restored` 进入 `complete_static`；它不
 冒充 DHCP 恢复，也不触发任何网络 runner。
 
+这些恢复阶段规则的事实来源是 `internal/controlapi/recovery_flow.go`，不再散落在各个
+handler 里。每个动作是一个 `recoveryIntent`：`checkRecovery` 负责 stage 前置、快照要求
+和操作者确认位（包括 stage 与确认位的检查先后顺序，它会改变返回的状态码），
+`advanceRecovery` 负责目标 stage、`Required` 与 operator note，两者都返回带确切
+status/code/message 的 precondition 错误。`recoveryGates` 保存 start / reload /
+restart-mihomo / source apply / config 编辑 / 恢复卡读取这些流程外动作的只读 stage 闸门。
+副作用留在 handler：handler 先跑 `SetManual` / `ProbeDHCP` / `SetDHCP`，再把结果
+（例如是否有 DHCP server 应答）通过 intent 交回模块决定落在哪个 stage。异步的
+gateway operation 结果同样是 intent，走 `applyRecovery`。
+新增 stage 或改动阶段规则时改这个文件并补表驱动测试，不要在 handler 里重新写一遍
+`state.Stage != ...`。本页仍然是这些规则为什么存在的事实来源。
+
 网络配置通过 revisioned `GET/PUT /api/v1/config` 修改；只允许 topology、DHCP/DNS、
 TUN、本机系统代理协同和 device-policy 初始化字段，运行中或 `prepared` 之后的 recovery 时拒绝。所有
 production 写入经 helper 落到 root-owned config。`/events` 发送真实

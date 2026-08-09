@@ -194,6 +194,111 @@ func checkRecovery(state RecoveryState, intent recoveryIntent) error {
 	return nil
 }
 
+// recoveryGateKind names an action outside the recovery flow that is only safe
+// at certain stages of a takeover. Gates never move the stage; they read it.
+type recoveryGateKind string
+
+const (
+	gateStartGateway  recoveryGateKind = "start_gateway"
+	gateReloadGateway recoveryGateKind = "reload_gateway"
+	gateRestartMihomo recoveryGateKind = "restart_mihomo"
+	gateApplySource   recoveryGateKind = "apply_source"
+	gateEditConfig    recoveryGateKind = "edit_config"
+	gateReadCard      recoveryGateKind = "read_card"
+)
+
+// activeTakeoverStages are the stages in which the gateway is actually serving
+// the downstream LAN, whether or not client acceptance was collected.
+var activeTakeoverStages = []string{RecoveryGatewayActive, RecoveryClientValidated, RecoveryClientValidationSkipped}
+
+type recoveryGate struct {
+	// from whitelists stages; except blacklists them. Exactly one is set.
+	from   []string
+	except []string
+	// allowWhenNotRequired passes any stage that no longer needs operator
+	// action, in addition to the stages in from.
+	allowWhenNotRequired bool
+	requireSnapshot      bool
+	status               int
+	code                 string
+	message              string
+}
+
+var recoveryGates = map[recoveryGateKind]recoveryGate{
+	gateStartGateway: {
+		from:    []string{RecoveryRouterDHCPDisabledConfirmed},
+		message: "same-LAN DHCP takeover requires persisted confirmation that router DHCP is disabled",
+	},
+	gateReloadGateway: {
+		from:    activeTakeoverStages,
+		message: "same-LAN DHCP takeover can reload only while the gateway is active",
+	},
+	gateRestartMihomo: {
+		from:    activeTakeoverStages,
+		message: "same-LAN DHCP takeover can restart mihomo only while the gateway is active",
+	},
+	gateApplySource: {
+		from:    activeTakeoverStages,
+		message: "same-LAN DHCP takeover can apply a profile only while the gateway is active",
+	},
+	gateEditConfig: {
+		from:                 []string{RecoveryPrepared},
+		allowWhenNotRequired: true,
+		code:                 "recovery_required",
+		message:              "finish network recovery before editing topology",
+	},
+	gateReadCard: {
+		except:          []string{RecoveryIdle},
+		requireSnapshot: true,
+		status:          http.StatusNotFound,
+		code:            "recovery_card_missing",
+		message:         "no recovery card is available",
+	},
+}
+
+// recoveryNeedsCardDiscard reports whether clearing recovery must also destroy a
+// prepared offline card rather than simply resetting the state to idle.
+func recoveryNeedsCardDiscard(state RecoveryState) bool {
+	return state.Stage == RecoveryPrepared
+}
+
+// checkRecoveryGate reports whether an action outside the flow may run at the
+// current stage. Topology and runtime facts stay with the caller.
+func checkRecoveryGate(state RecoveryState, kind recoveryGateKind) error {
+	gate, ok := recoveryGates[kind]
+	if !ok {
+		return fmt.Errorf("unknown recovery gate %q", kind)
+	}
+	if gate.allowWhenNotRequired && !state.Required {
+		return nil
+	}
+	allowed := len(gate.except) > 0
+	for _, stage := range gate.from {
+		if state.Stage == stage {
+			allowed = true
+		}
+	}
+	for _, stage := range gate.except {
+		if state.Stage == stage {
+			allowed = false
+		}
+	}
+	if allowed && gate.requireSnapshot && state.NetworkSnapshot == nil {
+		allowed = false
+	}
+	if allowed {
+		return nil
+	}
+	status, code := gate.status, gate.code
+	if status == 0 {
+		status = http.StatusConflict
+	}
+	if code == "" {
+		code = "recovery_precondition"
+	}
+	return &recoveryRuleError{Status: status, Code: code, Message: gate.message}
+}
+
 // checkRecoveryStage reports only the stage precondition. Handlers that must
 // reject a wrong stage before they read the request body use it; the ordering
 // between stage and confirmation is itself part of the rules.
@@ -365,6 +470,15 @@ func (s *Server) applyRecovery(state RecoveryState, intent recoveryIntent) error
 // intent may not run. Handlers call it before performing a network effect.
 func (s *Server) gateRecoveryIntent(w http.ResponseWriter, state RecoveryState, intent recoveryIntent) bool {
 	if err := checkRecovery(state, intent); err != nil {
+		writeRecoveryError(w, err)
+		return false
+	}
+	return true
+}
+
+// gateRecovery reports the stage rule for an action outside the recovery flow.
+func (s *Server) gateRecovery(w http.ResponseWriter, state RecoveryState, kind recoveryGateKind) bool {
+	if err := checkRecoveryGate(state, kind); err != nil {
 		writeRecoveryError(w, err)
 		return false
 	}

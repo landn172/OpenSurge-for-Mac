@@ -477,8 +477,99 @@ func TestRecoveryOperationOutcomes(t *testing.T) {
 	})
 }
 
+// Actions outside the flow that a takeover stage may block.
+func TestRecoveryGates(t *testing.T) {
+	allStages := []string{
+		RecoveryIdle, RecoveryPrepared, RecoveryMacStatic, RecoveryRouterDHCPDisabledConfirmed,
+		RecoveryGatewayActive, RecoveryClientValidated, RecoveryClientValidationSkipped,
+		RecoveryGatewayStopped, RecoveryRouterDHCPRestored, RecoveryComplete, RecoveryCompleteStatic,
+	}
+
+	cases := []struct {
+		kind    recoveryGateKind
+		allowed []string
+	}{
+		{gateStartGateway, []string{RecoveryRouterDHCPDisabledConfirmed}},
+		{gateReloadGateway, activeTakeoverStages},
+		{gateRestartMihomo, activeTakeoverStages},
+		{gateApplySource, activeTakeoverStages},
+	}
+
+	for _, tc := range cases {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			allowed := map[string]bool{}
+			for _, stage := range tc.allowed {
+				allowed[stage] = true
+			}
+			for _, stage := range allStages {
+				state := stateAtWithSnapshot(stage)
+				state.Required = true
+				err := checkRecoveryGate(state, tc.kind)
+				if allowed[stage] && err != nil {
+					t.Errorf("stage %s should be allowed, got %v", stage, err)
+				}
+				if !allowed[stage] {
+					requireRuleError(t, err, http.StatusConflict, "recovery_precondition")
+				}
+			}
+		})
+	}
+}
+
+// Editing the configuration is blocked only while recovery still needs operator
+// action, and prepared recovery data may always be corrected.
+func TestRecoveryEditConfigGate(t *testing.T) {
+	for _, stage := range []string{RecoveryIdle, RecoveryComplete, RecoveryCompleteStatic} {
+		state := stateAt(stage)
+		if err := checkRecoveryGate(state, gateEditConfig); err != nil {
+			t.Errorf("stage %s with no pending recovery should be editable, got %v", stage, err)
+		}
+	}
+
+	prepared := stateAtWithSnapshot(RecoveryPrepared)
+	prepared.Required = true
+	if err := checkRecoveryGate(prepared, gateEditConfig); err != nil {
+		t.Errorf("prepared recovery must stay correctable, got %v", err)
+	}
+
+	for _, stage := range []string{RecoveryMacStatic, RecoveryGatewayActive, RecoveryGatewayStopped} {
+		state := stateAtWithSnapshot(stage)
+		state.Required = true
+		requireRuleError(t, checkRecoveryGate(state, gateEditConfig), http.StatusConflict, "recovery_required")
+	}
+}
+
+// The offline recovery card exists from the moment recovery leaves idle.
+func TestRecoveryCardGate(t *testing.T) {
+	requireRuleError(t, checkRecoveryGate(stateAt(RecoveryIdle), gateReadCard), http.StatusNotFound, "recovery_card_missing")
+	requireRuleError(t, checkRecoveryGate(stateAt(RecoveryPrepared), gateReadCard), http.StatusNotFound, "recovery_card_missing")
+
+	for _, stage := range []string{RecoveryPrepared, RecoveryMacStatic, RecoveryGatewayActive, RecoveryComplete, RecoveryCompleteStatic} {
+		if err := checkRecoveryGate(stateAtWithSnapshot(stage), gateReadCard); err != nil {
+			t.Errorf("stage %s should expose the card, got %v", stage, err)
+		}
+	}
+
+	idleWithSnapshot := stateAtWithSnapshot(RecoveryIdle)
+	requireRuleError(t, checkRecoveryGate(idleWithSnapshot, gateReadCard), http.StatusNotFound, "recovery_card_missing")
+}
+
+func TestRecoveryCardDiscardOnlyFromPrepared(t *testing.T) {
+	if !recoveryNeedsCardDiscard(stateAt(RecoveryPrepared)) {
+		t.Error("a prepared card must be destroyed, not merely reset")
+	}
+	for _, stage := range []string{RecoveryIdle, RecoveryComplete, RecoveryCompleteStatic} {
+		if recoveryNeedsCardDiscard(stateAt(stage)) {
+			t.Errorf("stage %s has no prepared card to discard", stage)
+		}
+	}
+}
+
 func TestUnknownRecoveryIntentIsRejected(t *testing.T) {
 	if _, err := advanceRecovery(stateAt(RecoveryIdle), recoveryIntent{Kind: "not_a_real_intent"}); err == nil {
 		t.Fatal("expected an unknown intent to be rejected")
+	}
+	if err := checkRecoveryGate(stateAt(RecoveryIdle), "not_a_real_gate"); err == nil {
+		t.Fatal("expected an unknown gate to be rejected")
 	}
 }
