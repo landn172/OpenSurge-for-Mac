@@ -478,47 +478,30 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) overview(ctx context.Context) (Overview, error) {
-	cfg, desiredErr := config.Load(s.configPath)
-	if desiredErr != nil {
-		cfg, _ = config.LoadRuntime(s.configPath)
-	}
-	manager := gateway.New(cfg)
-	status, statusErr := manager.Status(ctx)
+	state := s.gatewayState(ctx)
+	cfg := state.cfg
 	report := doctor.Run(cfg)
 	controlDoctorChecks := doctorChecksForControl(report.Checks)
-	paths := runtime.NewPaths(cfg)
-	leases, _ := device.LoadLeases(paths.LeaseFile)
+	leases, _ := device.LoadLeases(state.paths.LeaseFile)
 	if leases == nil {
 		leases = []device.Client{}
 	}
 	if cfg.DevicePolicy.Bundle != nil {
 		annotateRegisteredLeaseNames(leases, cfg.DevicePolicy.Bundle.Policy)
 	}
-	recovery, _ := s.store.Recovery()
-	desiredDigest := ""
-	if cfg.DevicePolicy.Bundle != nil {
-		desiredDigest = cfg.DevicePolicy.Bundle.Digest
-	}
-	desiredProfileDigest, profileDigestErr := config.MihomoProfileDigest(cfg)
-	appliedDigest := ""
-	appliedProfileDigest := ""
-	if state, exists, _ := runtime.LoadState(paths.StateFile); exists {
-		appliedDigest = state.DevicePolicyDigest
-		appliedProfileDigest = state.ProfileDigest
-	}
 	warnings := []string{}
-	if desiredErr != nil {
-		warnings = append(warnings, "desired configuration: "+desiredErr.Error())
+	if state.configErr != nil {
+		warnings = append(warnings, "desired configuration: "+state.configErr.Error())
 	}
-	if profileDigestErr != nil {
-		warnings = append(warnings, "desired imported profile: "+profileDigestErr.Error())
+	if state.profileDigestErr != nil {
+		warnings = append(warnings, "desired imported profile: "+state.profileDigestErr.Error())
 	}
 	groups, groupErr := mihomo.FetchProxyGroups(ctx, cfg)
 	if groups == nil {
 		groups = []mihomo.ProxyGroup{}
 	}
 	groups = mihomo.VisibleProxyGroups(groups)
-	if groupErr != nil && status.Gateway == "running" {
+	if groupErr != nil && state.status.Gateway == "running" {
 		warnings = append(warnings, "mihomo policies unavailable: "+groupErr.Error())
 	}
 	providers, providerErr := mihomo.FetchProviders(ctx, cfg)
@@ -529,33 +512,33 @@ func (s *Server) overview(ctx context.Context) (Overview, error) {
 	if providers.RuleProviders == nil {
 		providers.RuleProviders = []mihomo.RuleProvider{}
 	}
-	if providerErr != nil && status.Gateway == "running" {
+	if providerErr != nil && state.status.Gateway == "running" {
 		warnings = append(warnings, "mihomo providers unavailable: "+providerErr.Error())
 	}
-	if status.TUNError != "" {
-		warnings = append(warnings, "mihomo TUN: "+status.TUNError)
+	if state.status.TUNError != "" {
+		warnings = append(warnings, "mihomo TUN: "+state.status.TUNError)
 	}
-	if status.RuntimeState == "interrupted" {
+	if state.status.RuntimeState == "interrupted" {
 		warnings = append(warnings, "gateway runtime was interrupted by a system reboot; stop to clean stale state before starting again")
 	}
 	return Overview{
 		SchemaVersion:        SchemaVersion,
-		Revision:             fileDigest(s.configPath),
+		Revision:             state.revision,
 		Topology:             cfg.Gateway.Mode,
-		DesiredDigest:        desiredDigest,
-		AppliedDigest:        appliedDigest,
-		DesiredProfileDigest: desiredProfileDigest,
-		AppliedProfileDigest: appliedProfileDigest,
-		Drift:                desiredDigest != appliedDigest || desiredProfileDigest != appliedProfileDigest,
+		DesiredDigest:        state.desiredDigest,
+		AppliedDigest:        state.appliedDigest,
+		DesiredProfileDigest: state.desiredProfileDigest,
+		AppliedProfileDigest: state.appliedProfileDigest,
+		Drift:                state.drift(),
 		Warnings:             warnings,
-		Status:               status,
-		StatusError:          errorString(statusErr),
+		Status:               state.status,
+		StatusError:          errorString(state.statusErr),
 		Doctor:               controlDoctorChecks,
 		DoctorHealthy:        doctorHealthyForControl(controlDoctorChecks),
 		Leases:               leases,
 		Policies:             groups,
 		Providers:            providers,
-		Recovery:             recovery,
+		Recovery:             state.recovery,
 	}, nil
 }
 
@@ -1806,27 +1789,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stateEvent(ctx context.Context) (StateEvent, error) {
-	cfg, err := config.LoadRuntime(s.configPath)
-	if err != nil {
-		return StateEvent{}, err
+	state := s.gatewayState(ctx)
+	if state.runtimeErr != nil {
+		return StateEvent{}, state.runtimeErr
 	}
-	status, _ := gateway.New(cfg).Status(ctx)
-	paths := runtime.NewPaths(cfg)
-	desired := ""
-	if cfg.DevicePolicy.File != "" {
-		if bundle, err := device.LoadPolicyBundle(cfg.DevicePolicy.File); err == nil {
-			desired = bundle.Digest
-		}
-	}
-	applied := ""
-	desiredProfile, _ := config.MihomoProfileDigest(cfg)
-	appliedProfile := ""
-	if state, exists, _ := runtime.LoadState(paths.StateFile); exists {
-		applied = state.DevicePolicyDigest
-		appliedProfile = state.ProfileDigest
-	}
-	recovery, _ := s.store.Recovery()
-	return StateEvent{SchemaVersion: SchemaVersion, Revision: fileDigest(s.configPath), Gateway: status.Gateway, DesiredDigest: desired, AppliedDigest: applied, DesiredProfileDigest: desiredProfile, AppliedProfileDigest: appliedProfile, Drift: desired != applied || desiredProfile != appliedProfile, Recovery: recovery}, nil
+	return state.stateEvent(), nil
 }
 
 func (s *Server) sourceByID(id string) (Source, error) {
