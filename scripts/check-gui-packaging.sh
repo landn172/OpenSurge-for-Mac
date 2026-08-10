@@ -7,6 +7,7 @@ POSTINSTALL="$ROOT/packaging/pkg-scripts/postinstall"
 RECOVERY_STATE="$ROOT/packaging/pkg-scripts/recovery-state.sh"
 INSTALLED_PROCESSES="$ROOT/packaging/pkg-scripts/installed-processes.sh"
 RELEASE_DEPS="$ROOT/scripts/prepare-gui-release-deps.sh"
+RUNTIME_LOCK="$ROOT/dependencies/runtime.lock.json"
 RELEASE_VERIFY="$ROOT/scripts/verify-unsigned-gui-installer.sh"
 RELEASE_WORKFLOW="$ROOT/.github/workflows/release-unsigned.yml"
 MENUBAR_PACKAGE="$ROOT/apps/menubar/Package.swift"
@@ -23,7 +24,7 @@ UNINSTALLER="$ROOT/scripts/uninstall-gui.sh"
 bash -n "$PREINSTALL" "$POSTINSTALL" "$RECOVERY_STATE" "$INSTALLED_PROCESSES" "$ROOT/scripts/uninstall-gui.sh" \
   "$ROOT/scripts/build-gui-installer.sh" "$RELEASE_DEPS" "$RELEASE_VERIFY"
 [[ -x "$PREINSTALL" ]] || { echo "preinstall must be executable" >&2; exit 1; }
-[[ -x "$RELEASE_DEPS" && -x "$RELEASE_VERIFY" ]] || {
+[[ -x "$RELEASE_DEPS" && -x "$RELEASE_VERIFY" && -f "$RUNTIME_LOCK" ]] || {
   echo "release preparation and verification scripts must be executable" >&2
   exit 1
 }
@@ -326,8 +327,12 @@ grep -Fq 'x86_64) GO_ARCH=amd64' "$ROOT/scripts/build-gui-installer.sh" || {
   echo "GUI package must map the Intel Mach-O architecture to Go amd64" >&2
   exit 1
 }
-grep -Fq 'mihomo-darwin-amd64-compatible' "$RELEASE_DEPS" || {
-  echo "release dependencies must include the compatible Intel mihomo build" >&2
+grep -Fq 'opensurge-deps shell --arch' "$RELEASE_DEPS" || {
+  echo "release dependency preparation must read the runtime lock through opensurge-deps" >&2
+  exit 1
+}
+grep -Fq 'mihomo-darwin-amd64-compatible' "$RUNTIME_LOCK" || {
+  echo "runtime dependency lock must include the compatible Intel mihomo build" >&2
   exit 1
 }
 grep -Fq 'actions/attest@v4' "$RELEASE_WORKFLOW" || {

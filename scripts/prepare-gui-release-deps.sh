@@ -7,28 +7,13 @@ CACHE_ROOT="$OUTPUT_ROOT/cache"
 BIN_ROOT="$OUTPUT_ROOT/bin"
 RELEASE_ARCH="${OPENSURGE_RELEASE_ARCH:-$(uname -m)}"
 MINIMUM_MACOS="${OPENSURGE_MINIMUM_MACOS:-13.0}"
+GO_BIN="${GO_BIN:-$(command -v go || true)}"
 
-DNSMASQ_VERSION=2.93
-DNSMASQ_SHA256=cc967771abdafeb43d10db18932d6b59fd4bed2c69c22acf8cb96aff6920d55f
-DNSMASQ_ARCHIVE="dnsmasq-${DNSMASQ_VERSION}.tar.gz"
-DNSMASQ_URL="https://thekelleys.org.uk/dnsmasq/${DNSMASQ_ARCHIVE}"
-
-MIHOMO_VERSION=1.19.27
-case "$RELEASE_ARCH" in
-  arm64)
-    MIHOMO_SHA256=3617c9d8a5a55aecfe1ebd0f55ff59f2706c8ad68fd65c6c4e5f7cf2b74263f1
-    MIHOMO_ARCHIVE="mihomo-darwin-arm64-v${MIHOMO_VERSION}.gz"
-    ;;
-  x86_64)
-    MIHOMO_SHA256=ddfafe6993e0adf97420d126d5ce7868113174630ccbf36d4a1bee2784085172
-    MIHOMO_ARCHIVE="mihomo-darwin-amd64-compatible-v${MIHOMO_VERSION}.gz"
-    ;;
-  *)
-    echo "unsupported macOS release architecture: $RELEASE_ARCH" >&2
-    exit 1
-    ;;
-esac
-MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/v${MIHOMO_VERSION}/${MIHOMO_ARCHIVE}"
+[[ -x "$GO_BIN" ]] || { echo "Go toolchain not found; set GO_BIN" >&2; exit 1; }
+# The lock file is the only source for runtime component versions, sources,
+# architectures, and checksums. opensurge-deps validates it before producing
+# shell-quoted assignments for this release-only script.
+eval "$(cd "$ROOT" && "$GO_BIN" run ./cmd/opensurge-deps shell --arch "$RELEASE_ARCH")"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "GUI release dependencies must be prepared on macOS" >&2

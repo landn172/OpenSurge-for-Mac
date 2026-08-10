@@ -5,6 +5,7 @@ and libraries listed below retain their upstream licenses. The macOS installer
 places this notice and the referenced license texts under
 `/Library/Application Support/OpenSurge/share/licenses/`.
 
+<!-- runtime-dependencies:start -->
 ## mihomo
 
 - Version: `1.19.27`
@@ -33,6 +34,7 @@ places this notice and the referenced license texts under
   <https://thekelleys.org.uk/dnsmasq/dnsmasq-2.93.tar.gz>
 - License texts: [`third_party/licenses/dnsmasq-COPYING`](third_party/licenses/dnsmasq-COPYING)
   and [`LICENSE`](LICENSE)
+<!-- runtime-dependencies:end -->
 
 ## gopkg.in/yaml.v3
 

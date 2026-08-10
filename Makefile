@@ -1,4 +1,4 @@
-.PHONY: test build doctor status policy-control-test
+.PHONY: test build doctor status policy-control-test deps-check
 .PHONY: web-install web-build web-test control-build control-run menubar-build menubar-test gui-build gui-test gui-installer gui-notarize
 .PHONY: lab-install lab-uninstall-root lab-check lab-up lab-status lab-test
 .PHONY: lab-test-tun lab-test-tun-imported-profile lab-test-tun-imported-egress lab-test-tun-local-routing lab-test-tun-device-policy lab-down lab-destroy
@@ -14,6 +14,9 @@
 
 test:
 	go test ./...
+
+deps-check:
+	go run ./cmd/opensurge-deps check
 
 build:
 	go build -o bin/omg ./cmd/omg

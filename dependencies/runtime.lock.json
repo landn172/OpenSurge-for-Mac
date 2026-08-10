@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "components": [
+    {
+      "name": "dnsmasq",
+      "version": "2.93",
+      "distribution": "source",
+      "license": "GPL-2.0-only OR GPL-3.0-only",
+      "source_url": "https://thekelleys.org.uk/dnsmasq/dnsmasq-2.93.tar.gz",
+      "archive": "dnsmasq-2.93.tar.gz",
+      "sha256": "cc967771abdafeb43d10db18932d6b59fd4bed2c69c22acf8cb96aff6920d55f"
+    },
+    {
+      "name": "mihomo",
+      "version": "1.19.27",
+      "distribution": "upstream_binary",
+      "license": "GPL-3.0-only",
+      "upstream_url": "https://github.com/MetaCubeX/mihomo",
+      "source_url": "https://github.com/MetaCubeX/mihomo/tree/5184081ac327394d9e15fa5d5f9f4a61e723fd94",
+      "artifacts": [
+        {
+          "arch": "arm64",
+          "archive": "mihomo-darwin-arm64-v1.19.27.gz",
+          "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-darwin-arm64-v1.19.27.gz",
+          "sha256": "3617c9d8a5a55aecfe1ebd0f55ff59f2706c8ad68fd65c6c4e5f7cf2b74263f1"
+        },
+        {
+          "arch": "x86_64",
+          "archive": "mihomo-darwin-amd64-compatible-v1.19.27.gz",
+          "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-darwin-amd64-compatible-v1.19.27.gz",
+          "sha256": "ddfafe6993e0adf97420d126d5ce7868113174630ccbf36d4a1bee2784085172"
+        }
+      ]
+    }
+  ]
+}

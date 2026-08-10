@@ -17,13 +17,15 @@ concurrency:
 jobs:
   build:
     name: Build ${{ matrix.arch }} package
-    runs-on: macos-14
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        arch:
-          - arm64
-          - x86_64
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x86_64
+            runner: macos-13
     env:
       OPENSURGE_APP_ARCH: ${{ matrix.arch }}
       OPENSURGE_RELEASE_ARCH: ${{ matrix.arch }}
@@ -81,6 +83,16 @@ jobs:
 
       - name: Prepare pinned runtime dependencies
         run: ./scripts/prepare-gui-release-deps.sh
+
+      - name: Verify runtime dependency lock and engine compatibility
+        env:
+          GOCACHE: ${{ runner.temp }}/go-build-cache
+        run: |
+          make deps-check
+          go run ./cmd/opensurge-deps validate \
+            --config examples/config.example.yaml \
+            --mihomo runtime/release-tools/bin/mihomo \
+            --dnsmasq runtime/release-tools/bin/dnsmasq
 
       - name: Run GUI release checks
         env:
