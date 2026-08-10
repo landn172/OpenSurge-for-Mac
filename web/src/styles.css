@@ -71,6 +71,10 @@ button{cursor:pointer}
 .rail{position:fixed;inset:0 auto 0 0;z-index:12;width:var(--rail-width);display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 0 14px;border-right:1px solid var(--border);background:var(--surface)}
 .rail-mark{width:34px;height:34px;display:block;object-fit:contain;flex:0 0 auto;margin-bottom:12px}
 .rail-sep{width:22px;height:1px;margin:8px 0;background:var(--border);flex:0 0 auto}
+/* The groups exist to bind a separator to the items after it, not to lay
+   anything out: `display:contents` keeps the items direct flex children of the
+   rail, so one `gap` spaces every icon and the separator stays centred. */
+.rail-group{display:contents}
 .rail-item{position:relative;display:grid;place-items:center;width:40px;height:40px;flex:0 0 auto;border:0;border-radius:11px;background:transparent;color:var(--muted);transition:background .15s,color .15s}
 .rail-item svg{width:19px;height:19px}
 .rail-item:hover{background:var(--surface-hover);color:var(--fg)}
@@ -129,8 +133,8 @@ button{cursor:pointer}
 .now-connections dd{margin:4px 0 0;font-family:var(--font-display);font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
 .now-connections .now-total{font-size:22px}
 .now-connections .attention dd{color:var(--warn-ink)}
-.now-chart{margin:16px -24px 0}
-.now-chart svg{display:block;width:100%;height:150px}
+.trend-chart.now-chart{margin:16px -24px 0}
+.trend-chart.now-chart svg{display:block;width:100%;height:150px}
 .now-axis{padding:0 24px 16px}
 
 /* ---------- 总览：网关状态与服务就绪 ---------- */
@@ -156,7 +160,7 @@ button{cursor:pointer}
 .readiness-step small{grid-column:2;color:var(--muted);font-family:var(--font-mono);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* ---------- 总览：活跃设备 ---------- */
-.device-section{margin-top:14px;padding:20px 24px 22px}
+.section.device-section{margin-top:14px;padding:20px 24px 22px}
 .device-section-head h2{font-size:17px;font-weight:600}
 .device-section-head p{margin:4px 0 16px;color:var(--muted);font-size:12px}
 .device-list{border:1px solid var(--border);border-radius:12px;overflow:hidden}
@@ -178,7 +182,7 @@ button{cursor:pointer}
 .device-rate small{margin-top:2px;color:var(--muted);font-size:10px}
 .device-egress strong{font-size:11px;font-weight:600}
 .device-egress small{margin-top:2px;color:var(--muted);font-size:10px}
-.device-spark svg{display:block;width:100%;height:28px}
+.trend-chart.device-spark svg{display:block;width:100%;height:28px}
 .device-caret{color:var(--muted);font-size:14px;line-height:1;transition:transform .22s cubic-bezier(.22,1,.36,1)}
 .device-entry.open .device-caret{transform:rotate(180deg);color:var(--fg-soft)}
 .device-detail{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(220px,.65fr);gap:14px;padding:0 14px 16px;background:var(--surface-hover)}
@@ -186,8 +190,10 @@ button{cursor:pointer}
 .device-detail-facts>div{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:10px 13px;background:var(--surface)}
 .device-detail-facts dt{color:var(--muted);font-size:11px}
 .device-detail-facts dd{margin:0;font-size:11.5px;font-weight:600;overflow-wrap:anywhere}
-.device-trend-card{min-height:0;padding:14px 16px;border-radius:11px;box-shadow:none;background:var(--surface)}
-.device-trend-card .trend-chart svg{height:96px}
+/* The expanded row's chart is the same card as the dashboard's, just smaller:
+   qualified so it outranks .traffic-trend-card, which is declared later. */
+.traffic-trend-card.device-trend-card{min-height:0;padding:14px 16px;border-radius:11px;box-shadow:none;background:var(--surface)}
+.traffic-trend-card.device-trend-card .trend-chart svg{height:96px}
 .device-summary{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;margin-top:14px;color:var(--muted);font-size:11.5px}
 .device-summary strong{color:var(--fg-soft);font-weight:600}
 .device-refresh-error{display:block;margin-top:9px;color:var(--muted);font-size:11px}
@@ -225,7 +231,6 @@ button{cursor:pointer}
 .trend-chart{margin-top:5px}.trend-chart svg{display:block;width:100%;height:150px;overflow:visible}.chart-grid-line{stroke:#375047;stroke-width:.28;opacity:.38}.trend-line{fill:none;stroke-width:1.45;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}.trend-line.upload{stroke:#8c7cf5}.trend-line.download{stroke:#58bce8}
 .trend-axis{display:flex;justify-content:space-between;margin-top:-5px;color:#586d65;font-size:10px}
 @keyframes traffic-live-pulse{0%,100%{transform:scale(1);box-shadow:0 0 0 3px #69dfa712}50%{transform:scale(1.18);box-shadow:0 0 0 6px #69dfa706}}
-.device-trend-card{position:absolute;inset:0;height:100%;min-height:0;padding:16px;border-radius:12px;background:#0a1713;box-shadow:none;display:flex;flex-direction:column}.device-trend-card .trend-current{margin-top:9px}.device-trend-card .trend-chart{margin-top:auto}.device-trend-card .trend-chart svg{height:72px}
 .status-dot{width:8px;height:8px;border-radius:50%;background:#6d7773;box-shadow:0 0 0 4px #6d77731a}
 .status-dot.running{background:#76e4b0;box-shadow:0 0 0 4px #76e4b018}
 .status-dot.degraded{background:#ffbd70;box-shadow:0 0 0 4px #ffbd7018}
@@ -598,8 +603,9 @@ button{cursor:pointer}
 .save-stages .done i{background:var(--ok)}
 .reload-dialog{position:fixed;z-index:20;inset:50% auto auto 50%;transform:translate(-50%,-50%);width:min(520px,calc(100vw - 48px));margin:0;border:1px solid #486a5c;border-radius:16px;background:#0d1b17;color:#eaf2ee;padding:24px;box-shadow:0 0 0 100vmax #020807c9,0 25px 80px #000}
 .reload-dialog h2{margin:0 0 12px}.reload-dialog p,.reload-dialog li{color:#a3b5ae;line-height:1.6}.reload-dialog ul{padding-left:21px}.dialog-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:20px}.dialog-actions button{border:1px solid #2b433b;border-radius:9px;background:#172b25;color:#d6e3de;padding:9px 13px}.dialog-actions .primary{border:0;background:#9af0c7;color:#092019}
-@media(max-width:1150px){.workspace{padding:32px}
-.service-grid{grid-template-columns:repeat(2,1fr)}
+/* 1150px was the old sidebar-collapse threshold; the rail no longer collapses,
+   so workspace padding is left to the base rule and the 1020px breakpoint. */
+@media(max-width:1150px){.service-grid{grid-template-columns:repeat(2,1fr)}
 .config-form{grid-template-columns:repeat(2,minmax(0,1fr))}
 .dhcp-config-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 .mode-detail-layout{grid-template-columns:1fr}.mode-detail-copy{grid-template-columns:minmax(0,1.4fr) minmax(260px,.8fr);gap:22px}
@@ -631,7 +637,6 @@ html[data-theme="light"] .local-mode-switch button[aria-pressed="true"]{backgrou
 html[data-theme="light"] .traffic-trend-card{background:#fff;border-color:#cbded6;box-shadow:0 16px 42px #2a594315}
 html[data-theme="light"] .rate-caption,html[data-theme="light"] .trend-card-header p{color:#60776e}
 html[data-theme="light"] .chart-grid-line{stroke:#d7e5df}html[data-theme="light"] .trend-axis{color:#71877e}
-html[data-theme="light"] .device-trend-card{background:#f8fbfa}
 html[data-theme="light"] .mode.active{border-color:#54a983;background:linear-gradient(145deg,#e2f3eb,#fff)}
 html[data-theme="light"] .mode-topology-image-same_wifi_dhcp{background-image:url('/network-topologies/same_wifi_dhcp-light.svg')}html[data-theme="light"] .mode-topology-image-same_lan{background-image:url('/network-topologies/same_lan-light.svg')}html[data-theme="light"] .mode-topology-image-isolated_lan{background-image:url('/network-topologies/isolated_lan-light.svg')}
 html[data-theme="light"] .mode-detail-heading p,html[data-theme="light"] .mode-facts dt{color:#60776e}html[data-theme="light"] .mode-facts>div{border-color:#d9e7e1}html[data-theme="light"] .mode-facts dd{color:#26493d}
@@ -713,8 +718,6 @@ html[data-theme="light"] .reload-dialog{background:#fff;color:#183028;border-col
 html[data-theme="light"] .reload-dialog p,html[data-theme="light"] .reload-dialog li{color:#526a61}
 @media(max-width:1150px){.recovery-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
-@media(max-width:1250px){.device-trend-card{position:relative;inset:auto;height:270px;min-height:270px}.device-trend-card .trend-chart svg{height:128px}
-}
 @media(max-width:1150px){.source-import-grid,.source-grid{grid-template-columns:1fr}
 }
 @media(prefers-reduced-motion:reduce){.rail-item,.rail-tip,.source-actions button,.source-action-button,.mode-chevron,.mode-detail-shell,.config-switch,.config-switch-toggle,.config-switch-toggle i{transition:none!important}.mode-detail{animation:none}.button-spinner,.trend-live-dot span{animation:none}}
