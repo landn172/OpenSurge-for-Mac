@@ -27,7 +27,10 @@ case "$ARCH" in
   *) echo "unable to determine a single supported OpenSurge app architecture: ${ARCH:-unset}" >&2; exit 1 ;;
 esac
 
-SDKROOT="${SDKROOT:-/Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk}" \
+DEFAULT_SDKROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+SDKROOT="${SDKROOT:-$DEFAULT_SDKROOT}"
+[[ -d "$SDKROOT" ]] || { echo "macOS SDK not found; install Xcode or set SDKROOT" >&2; exit 1; }
+SDKROOT="$SDKROOT" \
 CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/opensurge-swift-module-cache}" \
 SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-/private/tmp/opensurge-swift-module-cache}" \
 swift build --disable-sandbox --package-path "$PACKAGE" --scratch-path "$SCRATCH" -c release --arch "$ARCH"

@@ -295,7 +295,7 @@ grep -Fq 'OpenSurgeMenuBarIcon.png' "$ROOT/scripts/build-menubar-app.sh" || {
   echo "menu bar build must include the monochrome menu bar icon resource" >&2
   exit 1
 }
-grep -Fq 'OpenSurgeAppIconView()' "$MENUBAR_CONTENT" || {
+grep -Fq 'OpenSurgeAppIconView(size:' "$MENUBAR_CONTENT" || {
   echo "menu bar window header must use the OpenSurge app icon" >&2
   exit 1
 }
@@ -307,7 +307,7 @@ grep -Fq 'rel="icon" type="image/png" href="/opensurge-icon.png"' "$WEB_INDEX" |
   echo "Web GUI must expose the OpenSurge browser icon" >&2
   exit 1
 }
-grep -Fq 'className="brand-mark" src="/opensurge-icon.png"' "$WEB_APP" || {
+grep -Fq 'className="rail-mark" src="/opensurge-icon.png"' "$WEB_APP" || {
   echo "Web GUI sidebar must use the OpenSurge app icon" >&2
   exit 1
 }
