@@ -32,6 +32,27 @@ interface_with_lab_ip() {
   return 1
 }
 
+new_vmnet_bridge() {
+  before="$1"
+  for candidate in $(vmnet_bridges); do
+    case "$before" in
+      *" $candidate "*) ;;
+      *) printf '%s\n' "$candidate"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+lab_interface() {
+  before="$1"
+  iface=$(interface_with_lab_ip || true)
+  if [ -n "$iface" ]; then
+    printf '%s\n' "$iface"
+    return 0
+  fi
+  new_vmnet_bridge "$before"
+}
+
 pid_is_running() {
   [ -f "$PID_FILE" ] || return 1
   pid=$(/bin/cat "$PID_FILE")
@@ -71,17 +92,22 @@ start_network() {
     exit 1
   fi
 
-  iface=$(interface_with_lab_ip || true)
-  if [ -z "$iface" ]; then
-    for candidate in $(vmnet_bridges); do
-      case "$before" in
-        *" $candidate "*) ;;
-        *) iface=$candidate; break ;;
-      esac
-    done
-  fi
+  # socket_vmnet creates its socket before vmnet.framework has necessarily
+  # attached vmenet to its host bridge.  Wait for the bridge as well; scanning
+  # immediately is racy on newer macOS releases.
+  iface=""
+  attempts=0
+  while [ -z "$iface" ] && [ "$attempts" -lt 100 ]; do
+    iface=$(lab_interface "$before" || true)
+    if [ -n "$iface" ]; then
+      break
+    fi
+    attempts=$((attempts + 1))
+    /bin/sleep 0.1
+  done
   if [ -z "$iface" ]; then
     /bin/cat "$LOG_FILE" >&2
+    stop_network
     echo "unable to identify the vmnet host interface" >&2
     exit 1
   fi
