@@ -22,7 +22,8 @@ root-owned 且不可由 group/other 写入的可执行文件；这是网关高�
 2. 更新标记包围的 third-party notice；运行 `go run ./cmd/opensurge-deps notices` 可以得到
    期望内容，再运行 `make deps-check`。
 3. 在两种架构的 macOS runner 上执行 `prepare-gui-release-deps.sh`。发行工作流会用已下载的
-   mihomo 对最终渲染的 gateway config 执行 `mihomo -t`。
+   mihomo 对 managed、imported profile，以及 same-LAN TUN 三份 gateway config 执行
+   `mihomo -t`，并用 dnsmasq 校验相应的生成配置。
 4. 执行 `make test`、`make policy-control-test`，以及实际 macOS 环境中的
    `make lab-test-tun`。升级时必须重新确认 `/configs` 中 `tun.enable` 的 failure semantics；
    不能把旧版本的 TUN ready 契约外推到新版本。

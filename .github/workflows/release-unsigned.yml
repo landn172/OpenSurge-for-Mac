@@ -89,10 +89,15 @@ jobs:
           GOCACHE: ${{ runner.temp }}/go-build-cache
         run: |
           make deps-check
-          go run ./cmd/opensurge-deps validate \
-            --config examples/config.example.yaml \
-            --mihomo runtime/release-tools/bin/mihomo \
-            --dnsmasq runtime/release-tools/bin/dnsmasq
+          for config in \
+            examples/config.example.yaml \
+            examples/config.imported-profile.example.yaml \
+            examples/config.same-lan.example.yaml; do
+            go run ./cmd/opensurge-deps validate \
+              --config "$config" \
+              --mihomo runtime/release-tools/bin/mihomo \
+              --dnsmasq runtime/release-tools/bin/dnsmasq
+          done
 
       - name: Run GUI release checks
         env:
