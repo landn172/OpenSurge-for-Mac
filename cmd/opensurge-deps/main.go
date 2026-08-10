@@ -66,6 +66,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	manifestPath := fs.String("manifest", defaultManifest, "runtime dependency lock file")
 	arch := fs.String("arch", "", "macOS architecture (arm64 or x86_64)")
 	noticesPath := fs.String("notices", "THIRD_PARTY_NOTICES.md", "third-party notices file")
+	releaseNotesPath := fs.String("release-notes", "packaging/unsigned-release-notes.md", "unsigned release notes file")
 	configPath := fs.String("config", "examples/config.example.yaml", "gateway config to validate")
 	mihomoPath := fs.String("mihomo", "", "prepared mihomo binary")
 	dnsmasqPath := fs.String("dnsmasq", "", "prepared dnsmasq binary")
@@ -89,8 +90,14 @@ func run(args []string, stdout, stderr *os.File) int {
 		}
 	case "notices":
 		fmt.Fprint(stdout, noticeBlock(locked))
+	case "release-notes":
+		fmt.Fprint(stdout, releaseNotesBlock(locked))
 	case "check":
 		if err := checkNotices(*noticesPath, noticeBlock(locked)); err != nil {
+			fmt.Fprintf(stderr, "runtime dependency check: %v\n", err)
+			return 1
+		}
+		if err := checkReleaseNotes(*releaseNotesPath, releaseNotesBlock(locked)); err != nil {
 			fmt.Fprintf(stderr, "runtime dependency check: %v\n", err)
 			return 1
 		}
@@ -114,7 +121,7 @@ func run(args []string, stdout, stderr *os.File) int {
 }
 
 func usage(w *os.File) {
-	fmt.Fprintln(w, "usage: opensurge-deps <shell|notices|check|validate> [flags]")
+	fmt.Fprintln(w, "usage: opensurge-deps <shell|notices|release-notes|check|validate> [flags]")
 }
 
 func loadManifest(path string) (manifest, error) {
@@ -267,6 +274,44 @@ func checkNotices(path, expected string) error {
 	end += len("<!-- runtime-dependencies:end -->")
 	if strings.TrimSpace(text[start:end]) != strings.TrimSpace(expected) {
 		return errors.New("runtime dependency notices differ from dependencies/runtime.lock.json; run `go run ./cmd/opensurge-deps notices` and update the marked block")
+	}
+	return nil
+}
+
+func releaseNotesBlock(locked manifest) string {
+	dnsmasq, _ := findComponent(locked, "dnsmasq")
+	mihomo, _ := findComponent(locked, "mihomo")
+	var out strings.Builder
+	out.WriteString("<!-- runtime-dependencies:zh:start -->\n")
+	fmt.Fprintf(&out, "- mihomo %s 源码：<%s>\n- dnsmasq %s 源码：<%s>\n", mihomo.Version, mihomo.SourceURL, dnsmasq.Version, dnsmasq.SourceURL)
+	out.WriteString("<!-- runtime-dependencies:zh:end -->\n")
+	out.WriteString("<!-- runtime-dependencies:en:start -->\n")
+	fmt.Fprintf(&out, "- mihomo %s source: <%s>\n- dnsmasq %s source: <%s>\n", mihomo.Version, mihomo.SourceURL, dnsmasq.Version, dnsmasq.SourceURL)
+	out.WriteString("<!-- runtime-dependencies:en:end -->\n")
+	return out.String()
+}
+
+func checkReleaseNotes(path, expected string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	text := string(data)
+	for _, markers := range [][2]string{
+		{"<!-- runtime-dependencies:zh:start -->", "<!-- runtime-dependencies:zh:end -->"},
+		{"<!-- runtime-dependencies:en:start -->", "<!-- runtime-dependencies:en:end -->"},
+	} {
+		start := strings.Index(text, markers[0])
+		end := strings.Index(text, markers[1])
+		if start < 0 || end < start {
+			return errors.New("runtime dependency release-note markers are missing or malformed")
+		}
+		end += len(markers[1])
+		expectedStart := strings.Index(expected, markers[0])
+		expectedEnd := strings.Index(expected, markers[1]) + len(markers[1])
+		if strings.TrimSpace(text[start:end]) != strings.TrimSpace(expected[expectedStart:expectedEnd]) {
+			return errors.New("runtime dependency release notes differ from dependencies/runtime.lock.json; run `go run ./cmd/opensurge-deps release-notes` and update the marked blocks")
+		}
 	}
 	return nil
 }

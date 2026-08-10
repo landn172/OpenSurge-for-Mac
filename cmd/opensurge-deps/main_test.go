@@ -35,6 +35,9 @@ func TestManifestShellAndNotices(t *testing.T) {
 	if !strings.Contains(notices, "runtime-dependencies:start") || !strings.Contains(notices, "mihomo-darwin-amd64-compatible-v1.19.27.gz") {
 		t.Fatalf("unexpected notices: %s", notices)
 	}
+	if releaseNotes := releaseNotesBlock(locked); !strings.Contains(releaseNotes, "runtime-dependencies:zh:start") || !strings.Contains(releaseNotes, "mihomo 1.19.27 source") {
+		t.Fatalf("unexpected release notes: %s", releaseNotes)
+	}
 }
 
 func TestManifestRejectsDuplicateArtifact(t *testing.T) {

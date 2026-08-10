@@ -11,7 +11,8 @@ root-owned 且不可由 group/other 写入的可执行文件；这是网关高�
 
 `go run ./cmd/opensurge-deps check` 会校验该锁文件，并要求
 `THIRD_PARTY_NOTICES.md` 中 `runtime-dependencies` 标记包围的区块与它完全一致。
-发行准备脚本从锁文件读取下载参数，而不是维护第二套版本常量。
+它也会校验 unsigned release notes 中的中英文源码链接。发行准备脚本从锁文件读取
+下载参数，而不是维护第二套版本常量。
 
 ## 更新流程
 

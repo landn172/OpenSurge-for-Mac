@@ -48,8 +48,10 @@ OpenSurge 自有代码采用 `GPL-3.0-only`。第三方许可证、声明与准�
 
 `/Library/Application Support/OpenSurge/share/licenses/`
 
+<!-- runtime-dependencies:zh:start -->
 - mihomo 1.19.27 源码：<https://github.com/MetaCubeX/mihomo/tree/5184081ac327394d9e15fa5d5f9f4a61e723fd94>
 - dnsmasq 2.93 源码：<https://thekelleys.org.uk/dnsmasq/dnsmasq-2.93.tar.gz>
+<!-- runtime-dependencies:zh:end -->
 
 ---
 
@@ -99,5 +101,7 @@ OpenSurge original code is licensed under `GPL-3.0-only`. Third-party license te
 
 `/Library/Application Support/OpenSurge/share/licenses/`
 
+<!-- runtime-dependencies:en:start -->
 - mihomo 1.19.27 source: <https://github.com/MetaCubeX/mihomo/tree/5184081ac327394d9e15fa5d5f9f4a61e723fd94>
 - dnsmasq 2.93 source: <https://thekelleys.org.uk/dnsmasq/dnsmasq-2.93.tar.gz>
+<!-- runtime-dependencies:en:end -->
