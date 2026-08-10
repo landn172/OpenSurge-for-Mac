@@ -15,19 +15,20 @@ import (
 )
 
 type Status struct {
-	Gateway      string `json:"gateway"`
-	RuntimeState string `json:"runtime_state,omitempty"`
-	Interface    string `json:"interface"`
-	LANIP        string `json:"lan_ip"`
-	DHCP         string `json:"dhcp"`
-	DHCPEnabled  bool   `json:"dhcp_enabled"`
-	Mihomo       string `json:"mihomo"`
-	TUN          string `json:"tun"`
-	TUNInterface string `json:"tun_interface,omitempty"`
-	TUNError     string `json:"tun_error,omitempty"`
-	PFAnchor     string `json:"pf_anchor"`
-	Forwarding   string `json:"forwarding"`
-	ClientCount  int    `json:"client_count"`
+	Gateway      string              `json:"gateway"`
+	RuntimeState string              `json:"runtime_state,omitempty"`
+	Interface    string              `json:"interface"`
+	LANIP        string              `json:"lan_ip"`
+	DHCP         string              `json:"dhcp"`
+	DHCPEnabled  bool                `json:"dhcp_enabled"`
+	Mihomo       string              `json:"mihomo"`
+	TUN          string              `json:"tun"`
+	TUNInterface string              `json:"tun_interface,omitempty"`
+	TUNError     string              `json:"tun_error,omitempty"`
+	PFAnchor     string              `json:"pf_anchor"`
+	Forwarding   string              `json:"forwarding"`
+	ClientCount  int                 `json:"client_count"`
+	Components   []runtime.Component `json:"components,omitempty"`
 }
 
 func (m Manager) Status(ctx context.Context) (Status, error) {
@@ -127,6 +128,7 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 		PFAnchor:     pfStatus,
 		Forwarding:   forwarding,
 		ClientCount:  len(clients),
+		Components:   state.Components,
 	}, nil
 }
 
@@ -183,6 +185,9 @@ func (s Status) Format() string {
 		fmt.Sprintf("pf anchor: %s", s.PFAnchor),
 		fmt.Sprintf("IP forwarding: %s", s.Forwarding),
 		fmt.Sprintf("Clients: %d", s.ClientCount),
+	}
+	for _, component := range s.Components {
+		lines = append(lines, fmt.Sprintf("Component %s: %s (%s)", component.Name, component.Version, component.SHA256))
 	}
 	return strings.Join(lines, "\n") + "\n"
 }

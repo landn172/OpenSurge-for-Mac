@@ -14,6 +14,10 @@ root-owned 且不可由 group/other 写入的可执行文件；这是网关高�
 它也会校验 unsigned release notes 中的中英文源码链接。发行准备脚本从锁文件读取
 下载参数，而不是维护第二套版本常量。
 
+网关成功启动时，runtime state 会记录实际执行的 mihomo/dnsmasq 的解析路径、版本输出与
+SHA-256。`status --format json` 中的 `components` 是当前进程所使用 component set 的
+审计快照；安装包也会保留所用的 `share/runtime.lock.json`。
+
 ## 更新流程
 
 ### mihomo

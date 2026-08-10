@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -27,7 +28,7 @@ func TestSaveAndLoadState(t *testing.T) {
 	if !exists {
 		t.Fatalf("LoadState() exists = false")
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("LoadState() = %+v, want %+v", got, want)
 	}
 }
@@ -50,7 +51,7 @@ func TestSaveStateReplacesExistingState(t *testing.T) {
 	if !exists {
 		t.Fatalf("LoadState() exists = false")
 	}
-	if got != second {
+	if !reflect.DeepEqual(got, second) {
 		t.Fatalf("LoadState() = %+v, want %+v", got, second)
 	}
 }
@@ -74,7 +75,7 @@ func TestSaveStateFailureLeavesExistingState(t *testing.T) {
 	if !exists {
 		t.Fatalf("LoadState(existing) exists = false")
 	}
-	if got != existing {
+	if !reflect.DeepEqual(got, existing) {
 		t.Fatalf("LoadState(existing) = %+v, want %+v", got, existing)
 	}
 }

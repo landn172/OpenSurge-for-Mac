@@ -88,6 +88,8 @@ type gatewayDeps struct {
 	currentBoot         func() (runtime.BootSession, error)
 	processFingerprint  func(int) (string, error)
 	processMatches      func(int, string) (bool, error)
+	inspectComponents   func(config.Config) ([]runtime.Component, error)
+	inspectMihomo       func(string) (runtime.Component, error)
 	now                 func() time.Time
 }
 
@@ -122,7 +124,13 @@ func defaultGatewayDeps() gatewayDeps {
 		currentBoot:        runtime.CurrentBootSession,
 		processFingerprint: process.Fingerprint,
 		processMatches:     process.MatchesFingerprint,
-		now:                time.Now,
+		inspectComponents: func(cfg config.Config) ([]runtime.Component, error) {
+			return runtime.InspectGatewayComponents(cfg.Mihomo.Binary, cfg.DHCP.Binary, cfg.DHCP.Enabled || cfg.Gateway.SameLAN())
+		},
+		inspectMihomo: func(binary string) (runtime.Component, error) {
+			return runtime.InspectComponent("mihomo", binary, "-v")
+		},
+		now: time.Now,
 	}
 }
 
@@ -159,6 +167,23 @@ func processMatches(deps gatewayDeps, pid int, fingerprint string) (bool, error)
 		return deps.processMatches(pid, fingerprint)
 	}
 	return process.MatchesFingerprint(pid, fingerprint)
+}
+
+func inspectGatewayComponents(deps gatewayDeps, cfg config.Config) ([]runtime.Component, error) {
+	if deps.inspectComponents == nil {
+		// gatewayDeps is private and production construction always supplies this
+		// hook. Keeping hand-built unit-test dependencies free of host binaries is
+		// intentional: their fake services test lifecycle ordering, not metadata.
+		return nil, nil
+	}
+	return deps.inspectComponents(cfg)
+}
+
+func inspectMihomoComponent(deps gatewayDeps, binary string) (runtime.Component, error) {
+	if deps.inspectMihomo == nil {
+		return runtime.Component{}, nil
+	}
+	return deps.inspectMihomo(binary)
 }
 
 func stopTrackedProcess(deps gatewayDeps, name string, pid int, fingerprint string, stop func(int) error) error {
@@ -250,6 +275,10 @@ func (m Manager) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("digest imported mihomo profile: %w", err)
 	}
+	components, err := inspectGatewayComponents(deps, m.cfg)
+	if err != nil {
+		return fmt.Errorf("inspect runtime components: %w", err)
+	}
 	if bundle := m.cfg.DevicePolicy.Bundle; bundle != nil {
 		if err := dhcp.ReconcilePolicyLeases(m.paths.LeaseFile, bundle.Compiled.Reservations); err != nil {
 			return err
@@ -265,6 +294,7 @@ func (m Manager) Start(ctx context.Context) error {
 		IPForwardingBefore: ipForwardingBefore,
 		PFEnabledBefore:    pfEnabledBefore,
 		ProfileDigest:      profileDigest,
+		Components:         components,
 		LocalSystemProxy:   systemProxySnapshot,
 	}
 	if bundle := m.cfg.DevicePolicy.Bundle; bundle != nil {
@@ -428,6 +458,10 @@ func (m Manager) RestartMihomo(ctx context.Context) error {
 	if err := mihomoManager.ValidateWrittenConfig(); err != nil {
 		return fmt.Errorf("prepared mihomo config validation failed: %w", err)
 	}
+	component, err := inspectMihomoComponent(deps, m.cfg.Mihomo.Binary)
+	if err != nil {
+		return fmt.Errorf("inspect replacement mihomo component: %w", err)
+	}
 
 	previousPID := state.PIDMihomo
 	previousFingerprint := state.MihomoProcessFingerprint
@@ -462,6 +496,9 @@ func (m Manager) RestartMihomo(ctx context.Context) error {
 		restoreErr := restoreSystemProxy()
 		stopErr := mihomoManager.Stop(newPID)
 		return errors.Join(err, restoreErr, stopErr)
+	}
+	if component.Name != "" {
+		state.Components = runtime.ReplaceComponent(state.Components, component)
 	}
 	if err := deps.saveState(m.paths.StateFile, state); err != nil {
 		restoreErr := restoreSystemProxy()

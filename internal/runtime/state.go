@@ -19,6 +19,7 @@ type State struct {
 	PFAnchorLoaded            bool                 `json:"pf_anchor_loaded"`
 	DevicePolicyDigest        string               `json:"device_policy_digest,omitempty"`
 	ProfileDigest             string               `json:"profile_digest,omitempty"`
+	Components                []Component          `json:"components,omitempty"`
 	LocalSystemProxy          *SystemProxySnapshot `json:"local_system_proxy,omitempty"`
 	StartedAt                 time.Time            `json:"started_at"`
 }

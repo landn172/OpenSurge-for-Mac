@@ -72,6 +72,7 @@ install -m 0644 "$ROOT/third_party/licenses/Apache-2.0.txt" "$LICENSE_ROOT/Apach
 install -m 0644 "$ROOT/third_party/licenses/yaml-v3-LICENSE" "$LICENSE_ROOT/yaml-v3-LICENSE"
 install -m 0644 "$ROOT/third_party/licenses/react-MIT.txt" "$LICENSE_ROOT/react-MIT.txt"
 install -m 0644 "$ROOT/THIRD_PARTY_NOTICES.md" "$LICENSE_ROOT/THIRD_PARTY_NOTICES.md"
+install -m 0644 "$ROOT/dependencies/runtime.lock.json" "$APP_ROOT/share/runtime.lock.json"
 ditto --norsrc --noextattr "$ROOT/bin/OpenSurge.app" "$PAYLOAD/Applications/OpenSurge.app"
 xattr -cr "$PAYLOAD"
 

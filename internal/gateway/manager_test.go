@@ -339,8 +339,11 @@ func TestStartAndStopCoordinateLocalSystemProxyAroundGatewayServices(t *testing.
 		newPF:               func(config.Config, runtime.Paths) pfService { return pfManager },
 		newSysctl:           func() sysctlService { return &fakeSysctl{current: "0"} },
 		newLocalSystemProxy: func() localSystemProxyService { return systemProxyManager },
-		processFingerprint:  fakeProcessFingerprint,
-		processMatches:      fakeProcessMatches,
+		inspectComponents: func(config.Config) ([]runtime.Component, error) {
+			return []runtime.Component{{Name: "mihomo", Version: "Mihomo Meta v1.19.27", SHA256: "mihomo-digest"}, {Name: "dnsmasq", Version: "Dnsmasq version 2.93", SHA256: "dnsmasq-digest"}}, nil
+		},
+		processFingerprint: fakeProcessFingerprint,
+		processMatches:     fakeProcessMatches,
 		interfaces: func() ([]net.Interface, error) {
 			return []net.Interface{{Name: "lan0"}, {Name: "wan0"}}, nil
 		},
@@ -366,6 +369,9 @@ func TestStartAndStopCoordinateLocalSystemProxyAroundGatewayServices(t *testing.
 	state, exists, err := runtime.LoadState(paths.StateFile)
 	if err != nil || !exists || state.LocalSystemProxy == nil || state.LocalSystemProxy.NetworkService != "USB 10/100/1000 LAN" {
 		t.Fatalf("runtime state=%#v exists=%v err=%v", state, exists, err)
+	}
+	if len(state.Components) != 2 || state.Components[0].Name != "mihomo" || state.Components[1].SHA256 != "dnsmasq-digest" {
+		t.Fatalf("runtime components = %#v", state.Components)
 	}
 	if indexOfEvent(events, "system-proxy-enable") < indexOfEvent(events, "pf-load") {
 		t.Fatalf("system proxy enabled before gateway readiness: %v", events)

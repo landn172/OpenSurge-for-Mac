@@ -233,6 +233,10 @@ grep -Fq 'install -m 0755 "$ROOT/scripts/uninstall-gui.sh" "$APP_ROOT/share/unin
   echo "GUI package must install the fixed root-owned uninstall script" >&2
   exit 1
 }
+grep -Fq 'install -m 0644 "$ROOT/dependencies/runtime.lock.json" "$APP_ROOT/share/runtime.lock.json"' "$ROOT/scripts/build-gui-installer.sh" || {
+  echo "GUI package must retain the runtime dependency lock for component audit" >&2
+  exit 1
+}
 grep -Fq 'if [[ ! -f "$ROOT/config.yaml" ]]' "$POSTINSTALL" || {
   echo "postinstall must preserve an existing config during upgrade" >&2
   exit 1
