@@ -5,11 +5,37 @@ OpenSurge 的完整 GUI 是 `web/` 中的 React 应用，菜单栏 App 是
 launcher。两者都只访问 `cmd/opensurge-control` 提供的 loopback API；业务规则继续位于
 Go gateway、device、mihomo 和 runtime 包中。
 
-loopback-only 是**当前代码的实际状态**，不再是长期边界：
-`sources/decisions/control-plane-lan-exposure.md` 已决定为手机 H5 面开放上游接口地址上的
-局域网监听，并且是「只读为主 + 暂不上 TLS + 手机侧不持 root 等价凭据」这一组绑在一起的
-条件。实现该决策时必须同步更新本段。在实现之前不要把局域网可达当成既有事实；在实现
-之后也不要单独放开写操作——那需要先重新评估 TLS 与凭据模型。
+loopback 仍是**默认**，但不再是唯一形态。按
+`sources/decisions/control-plane-lan-exposure.md`，Control Service 可以额外在上游接口的
+IPv4 地址上开第二个 listener，供手机 H5 面使用。开关是 `-mobile-interface <接口名>`，
+默认空即保持 loopback-only；**shipped 的 launchd plist 不传这个参数**。
+
+局域网 listener 是**附加**的，不替换 loopback。这一点是有意的：`control-endpoint.json`、
+菜单栏 App 和 CLI banner 因此保持原有契约不变，Swift 侧一行没改。地址由
+`macosnetwork.InterfaceIPv4` 在每次启动时按接口名解析——上游地址是 DHCP 分配、会变的，
+不能写进 plist。局域网 listener 打不开时只记日志并降级为 loopback-only：丢掉手机面是不便，
+丢掉菜单栏的控制面是故障。
+
+浏览器会话现在有 scope。手机通过 QR 换到的是 `scopeReadOnly`，Mac 上菜单栏打开的是
+`scopeFull`；bearer token 是原生 launcher 的凭据、从不进浏览器，因此保留完整权限。
+路由用 `s.auth`（仅完整权限）与 `s.authRO`（额外允许只读会话）显式标注，**默认关闭**——
+新增路由在有人明确改成 `authRO` 之前对手机不可见。只读会话能做的写操作只有三个：切设备
+出口、切 Selector、跑连通性检测。`internal/controlapi/mobile_surface_test.go` 用 AST 解析
+路由表来钉死这条不变量，新增一个 `authRO` 的写路由会直接让它变红。
+
+`scopeReadOnly` 必须保持为 `sessionScope` 的零值，这样忘记设置 scope 的代码路径会 fail
+closed 而不是拿到完整权限。
+
+Host 白名单（`securityHeaders`）是全仓库**唯一**的 DNS rebinding 防线——没有任何 CORS 头。
+它必须始终是由本地配置算出的**固定集合**：不能放宽成通配，更不能从 `r.Host` 推导。同理
+Origin 检查是对固定集合的成员判断，不是与请求派生值比较；后者会让 CSRF 防护静默失效。
+
+验收：单元测试覆盖逻辑，真实 listener 上的那部分由 `make lan-exposure-check IFACE=en0`
+覆盖（`scripts/check-lan-exposure.sh`）。它不做任何特权动作，也不碰数据面。注意它只证明
+本机视角，**不证明第二台物理设备的可达性**——那一步仍需真机验收。
+
+还没做的一环：产品里没有让用户打开这个开关的入口，目前只能靠命令行参数。把它做成配置项
+需要单独决策，因为经 `PUT /api/v1/config` 打开局域网暴露本身就是一条提权路径。
 
 菜单栏 App 唯一拥有的生命周期动作是网关 start/stop：面板顶部的开关，以及打开 App 时
 默认执行一次的自动启动。除此之外它仍然只消费 `/api/v1/menubar`，显示网关、客户端、

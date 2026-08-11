@@ -1,5 +1,5 @@
 .PHONY: test build doctor status policy-control-test deps-check
-.PHONY: web-install web-build web-test control-build control-run menubar-build menubar-test gui-build gui-test gui-installer gui-notarize
+.PHONY: web-install web-build web-test control-build control-run menubar-build menubar-test gui-build gui-test gui-installer gui-notarize lan-exposure-check
 .PHONY: lab-install lab-uninstall-root lab-check lab-up lab-status lab-test
 .PHONY: lab-test-tun lab-test-tun-imported-profile lab-test-tun-imported-egress lab-test-tun-local-routing lab-test-tun-device-policy lab-down lab-destroy
 .PHONY: real-device-start-off real-device-start-tun real-device-start-tun-proxy
@@ -48,6 +48,13 @@ gui-build: control-build menubar-build
 
 gui-test: test web-test menubar-test
 	./scripts/check-gui-packaging.sh
+
+# LAN exposure gate for the mobile (H5) surface. Not part of gui-test: it opens
+# a real listener on a real interface, so it needs an interface name and cannot
+# run unattended in CI.
+#   make lan-exposure-check IFACE=en0
+lan-exposure-check:
+	./scripts/check-lan-exposure.sh $(IFACE)
 
 gui-installer:
 	./scripts/build-gui-installer.sh

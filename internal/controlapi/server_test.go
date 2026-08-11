@@ -218,7 +218,7 @@ func TestBootstrapIsOneTimeAndCreatesSession(t *testing.T) {
 func TestAuthenticatedWebSessionSlidesIdleExpiry(t *testing.T) {
 	server := newTestServer(t)
 	const session = "browser-session"
-	server.sessions[session] = time.Now().Add(time.Minute)
+	server.sessions[session] = webSession{expires: time.Now().Add(time.Minute), scope: scopeFull}
 	started := time.Now()
 
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:61767/api/test", nil)
@@ -232,7 +232,7 @@ func TestAuthenticatedWebSessionSlidesIdleExpiry(t *testing.T) {
 		t.Fatalf("session request status=%d body=%s", response.Code, response.Body.String())
 	}
 	server.mu.Lock()
-	expires := server.sessions[session]
+	expires := server.sessions[session].expires
 	server.mu.Unlock()
 	if expires.Before(started.Add(webSessionIdleTimeout - time.Minute)) {
 		t.Fatalf("session expiry was not renewed: %s", expires)
@@ -1776,7 +1776,7 @@ runtime:
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.sessions["expired"] = time.Now().Add(-time.Minute)
+	server.sessions["expired"] = webSession{expires: time.Now().Add(-time.Minute), scope: scopeFull}
 	return server, network
 }
 

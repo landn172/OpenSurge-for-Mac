@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,6 +45,10 @@ type Options struct {
 	PingRouter        func(context.Context, string) error
 	Static            http.Handler
 	Credentials       SourceCredentialStore
+	// LANInterface enables the mobile (H5) surface by adding a second listener
+	// on this interface's current IPv4 address. Empty keeps the service
+	// loopback-only, which is the default and what the shipped plist does.
+	LANInterface string
 }
 
 type Server struct {
@@ -68,14 +74,36 @@ type Server struct {
 	token             string
 	baseURL           string
 
+	// Mobile (LAN) access. Empty when the Control Service is loopback-only,
+	// which stays the default. See
+	// docs/agent-wiki/sources/decisions/control-plane-lan-exposure.md.
+	lanAddr    string
+	lanBaseURL string
+
 	mu         sync.Mutex
-	sessions   map[string]time.Time
+	sessions   map[string]webSession
 	bootstraps map[string]bootstrapGrant
+}
+
+// sessionScope is what a browser session is allowed to do. The zero value is
+// deliberately the restricted one: a session that somehow reaches the auth
+// middleware without an explicit scope gets the least authority, not the most.
+type sessionScope int
+
+const (
+	scopeReadOnly sessionScope = iota
+	scopeFull
+)
+
+type webSession struct {
+	expires time.Time
+	scope   sessionScope
 }
 
 type bootstrapGrant struct {
 	expires time.Time
 	path    string
+	scope   sessionScope
 }
 
 const webSessionIdleTimeout = 12 * time.Hour
@@ -91,9 +119,22 @@ func New(options Options) (*Server, error) {
 	if options.Addr == "" {
 		options.Addr = "127.0.0.1:61767"
 	}
-	host, _, err := net.SplitHostPort(options.Addr)
+	host, port, err := net.SplitHostPort(options.Addr)
 	if err != nil || (host != "127.0.0.1" && host != "localhost") {
 		return nil, fmt.Errorf("control API must listen on loopback IPv4")
+	}
+	// Mobile access never replaces the loopback listener; it adds a second one.
+	// Keeping loopback primary means control-endpoint.json, the menubar app and
+	// the CLI banner keep the exact contract they have today.
+	lanAddr := ""
+	lanBaseURL := ""
+	if options.LANInterface != "" {
+		ip, err := macosnetwork.InterfaceIPv4(options.LANInterface)
+		if err != nil {
+			return nil, fmt.Errorf("resolve mobile access interface: %w", err)
+		}
+		lanAddr = net.JoinHostPort(ip, port)
+		lanBaseURL = "http://" + lanAddr
 	}
 	if options.StoreDir == "" {
 		home, err := os.UserHomeDir()
@@ -173,9 +214,40 @@ func New(options Options) (*Server, error) {
 		trafficSampler:    newTrafficRateSampler(),
 		token:             token,
 		baseURL:           "http://" + options.Addr,
-		sessions:          map[string]time.Time{},
+		lanAddr:           lanAddr,
+		lanBaseURL:        lanBaseURL,
+		sessions:          map[string]webSession{},
 		bootstraps:        map[string]bootstrapGrant{},
 	}, nil
+}
+
+// allowedHosts is the fixed set of Host header values this server answers to.
+//
+// This is the ONLY DNS-rebinding defense in the tree -- there are no CORS
+// headers anywhere -- so it must stay a fixed set computed from local
+// configuration. Never widen it to a wildcard and never derive it from the
+// request: a Host-derived allowlist accepts every name an attacker can point
+// at this address, which is exactly what rebinding needs.
+func (s *Server) allowedHosts() []string {
+	hosts := []string{"127.0.0.1", "localhost"}
+	if s.lanAddr != "" {
+		if host, _, err := net.SplitHostPort(s.lanAddr); err == nil {
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts
+}
+
+// allowedOrigins mirrors allowedHosts. Origin is compared against this set for
+// cookie-session mutations; it must never be compared against a value derived
+// from the request, which would make the check compare an attacker-controlled
+// value against itself and silently void CSRF protection.
+func (s *Server) allowedOrigins() []string {
+	origins := []string{s.baseURL}
+	if s.lanBaseURL != "" {
+		origins = append(origins, s.lanBaseURL)
+	}
+	return origins
 }
 
 func (s *Server) BootstrapURL() string {
@@ -183,31 +255,48 @@ func (s *Server) BootstrapURL() string {
 }
 
 func (s *Server) bootstrapURLFor(path string) string {
+	return s.bootstrapURL(path, s.baseURL, scopeFull)
+}
+
+// MobileAccessEnabled reports whether a phone-reachable listener exists.
+func (s *Server) MobileAccessEnabled() bool { return s.lanBaseURL != "" }
+
+// MobileBootstrapURL is the value to render as a QR code. It is built on the
+// LAN base URL, not the loopback one -- a QR encoding 127.0.0.1 would point the
+// phone at itself -- and it grants a read-only session.
+func (s *Server) MobileBootstrapURL(path string) (string, error) {
+	if s.lanBaseURL == "" {
+		return "", fmt.Errorf("mobile access is not enabled")
+	}
+	return s.bootstrapURL(path, s.lanBaseURL, scopeReadOnly), nil
+}
+
+func (s *Server) bootstrapURL(path, base string, scope sessionScope) string {
 	path = allowedWebPath(path)
 	code := randomToken(24)
 	s.mu.Lock()
-	s.bootstraps[code] = bootstrapGrant{expires: time.Now().Add(30 * time.Second), path: path}
+	s.bootstraps[code] = bootstrapGrant{expires: time.Now().Add(30 * time.Second), path: path, scope: scope}
 	s.mu.Unlock()
-	return s.baseURL + "/bootstrap?code=" + code
+	return base + "/bootstrap?code=" + code
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /bootstrap", s.exchangeBootstrap)
 	mux.HandleFunc("POST /api/v1/session/bootstrap", s.handleSessionBootstrap)
-	mux.Handle("GET /api/v1/overview", s.auth(http.HandlerFunc(s.handleOverview)))
-	mux.Handle("GET /api/v1/config", s.auth(http.HandlerFunc(s.handleControlConfig)))
+	mux.Handle("GET /api/v1/overview", s.authRO(http.HandlerFunc(s.handleOverview)))
+	mux.Handle("GET /api/v1/config", s.authRO(http.HandlerFunc(s.handleControlConfig)))
 	mux.Handle("PUT /api/v1/config", s.auth(http.HandlerFunc(s.handleControlConfig)))
-	mux.Handle("GET /api/v1/menubar", s.auth(http.HandlerFunc(s.handleMenuBar)))
-	mux.Handle("GET /api/v1/gateway/plan", s.auth(http.HandlerFunc(s.handleGatewayPlan)))
+	mux.Handle("GET /api/v1/menubar", s.authRO(http.HandlerFunc(s.handleMenuBar)))
+	mux.Handle("GET /api/v1/gateway/plan", s.authRO(http.HandlerFunc(s.handleGatewayPlan)))
 	mux.Handle("POST /api/v1/gateway/plan", s.auth(http.HandlerFunc(s.handleGatewayPlan)))
 	mux.Handle("POST /api/v1/gateway/start", s.auth(http.HandlerFunc(s.handleGatewayAction)))
 	mux.Handle("POST /api/v1/gateway/stop", s.auth(http.HandlerFunc(s.handleGatewayAction)))
 	mux.Handle("POST /api/v1/gateway/reload", s.auth(http.HandlerFunc(s.handleGatewayAction)))
 	mux.Handle("POST /api/v1/gateway/restart-mihomo", s.auth(http.HandlerFunc(s.handleGatewayAction)))
-	mux.Handle("GET /api/v1/recovery", s.auth(http.HandlerFunc(s.handleRecovery)))
+	mux.Handle("GET /api/v1/recovery", s.authRO(http.HandlerFunc(s.handleRecovery)))
 	mux.Handle("POST /api/v1/recovery", s.auth(http.HandlerFunc(s.handleRecovery)))
-	mux.Handle("GET /api/v1/recovery/card", s.auth(http.HandlerFunc(s.handleRecoveryCard)))
+	mux.Handle("GET /api/v1/recovery/card", s.authRO(http.HandlerFunc(s.handleRecoveryCard)))
 	mux.Handle("POST /api/v1/recovery/discard", s.auth(http.HandlerFunc(s.handleRecoveryDiscard)))
 	mux.Handle("POST /api/v1/recovery/prepare", s.auth(http.HandlerFunc(s.handleRecoveryPrepare)))
 	mux.Handle("POST /api/v1/recovery/abandon-takeover", s.auth(http.HandlerFunc(s.handleAbandonTakeover)))
@@ -216,34 +305,34 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/recovery/client-validated", s.auth(http.HandlerFunc(s.handleClientValidated)))
 	mux.Handle("POST /api/v1/recovery/client-validation-skip", s.auth(http.HandlerFunc(s.handleClientValidationSkip)))
 	mux.Handle("POST /api/v1/recovery/keep-static", s.auth(http.HandlerFunc(s.handleKeepStaticFinish)))
-	mux.Handle("GET /api/v1/network/discovery", s.auth(http.HandlerFunc(s.handleNetworkDiscovery)))
-	mux.Handle("GET /api/v1/network/interfaces", s.auth(http.HandlerFunc(s.handleNetworkInterfaces)))
+	mux.Handle("GET /api/v1/network/discovery", s.authRO(http.HandlerFunc(s.handleNetworkDiscovery)))
+	mux.Handle("GET /api/v1/network/interfaces", s.authRO(http.HandlerFunc(s.handleNetworkInterfaces)))
 	mux.Handle("POST /api/v1/network/apply-static", s.auth(http.HandlerFunc(s.handleApplyStatic)))
 	mux.Handle("POST /api/v1/network/dhcp-probe", s.auth(http.HandlerFunc(s.handleDHCPProbe)))
 	mux.Handle("POST /api/v1/network/restore-dhcp", s.auth(http.HandlerFunc(s.handleRestoreDHCP)))
-	mux.Handle("GET /api/v1/sources", s.auth(http.HandlerFunc(s.handleSources)))
+	mux.Handle("GET /api/v1/sources", s.authRO(http.HandlerFunc(s.handleSources)))
 	mux.Handle("POST /api/v1/sources", s.auth(http.HandlerFunc(s.handleSources)))
 	mux.Handle("POST /api/v1/sources/{id}/refresh", s.auth(http.HandlerFunc(s.handleSourceRefresh)))
 	mux.Handle("POST /api/v1/sources/{id}/apply", s.auth(http.HandlerFunc(s.handleSourceApply)))
-	mux.Handle("GET /api/v1/device-policy", s.auth(http.HandlerFunc(s.handleDevicePolicy)))
+	mux.Handle("GET /api/v1/device-policy", s.authRO(http.HandlerFunc(s.handleDevicePolicy)))
 	mux.Handle("PUT /api/v1/device-policy", s.auth(http.HandlerFunc(s.handleDevicePolicy)))
-	mux.Handle("GET /api/v1/devices", s.auth(http.HandlerFunc(s.handleDevices)))
-	mux.Handle("GET /api/v1/device-traffic", s.auth(http.HandlerFunc(s.handleDeviceTraffic)))
-	mux.Handle("POST /api/v1/devices/{device}/selectors/{slot}", s.auth(http.HandlerFunc(s.handleDeviceSelection)))
-	mux.Handle("GET /api/v1/policies", s.auth(http.HandlerFunc(s.handlePolicies)))
-	mux.Handle("POST /api/v1/policies/{group}/selection", s.auth(http.HandlerFunc(s.handlePolicySelection)))
-	mux.Handle("GET /api/v1/local-routing", s.auth(http.HandlerFunc(s.handleLocalRouting)))
+	mux.Handle("GET /api/v1/devices", s.authRO(http.HandlerFunc(s.handleDevices)))
+	mux.Handle("GET /api/v1/device-traffic", s.authRO(http.HandlerFunc(s.handleDeviceTraffic)))
+	mux.Handle("POST /api/v1/devices/{device}/selectors/{slot}", s.authRO(http.HandlerFunc(s.handleDeviceSelection)))
+	mux.Handle("GET /api/v1/policies", s.authRO(http.HandlerFunc(s.handlePolicies)))
+	mux.Handle("POST /api/v1/policies/{group}/selection", s.authRO(http.HandlerFunc(s.handlePolicySelection)))
+	mux.Handle("GET /api/v1/local-routing", s.authRO(http.HandlerFunc(s.handleLocalRouting)))
 	mux.Handle("POST /api/v1/local-routing", s.auth(http.HandlerFunc(s.handleLocalRouting)))
-	mux.Handle("GET /api/v1/proxy-health", s.auth(http.HandlerFunc(s.handleProxyHealth)))
+	mux.Handle("GET /api/v1/proxy-health", s.authRO(http.HandlerFunc(s.handleProxyHealth)))
 	mux.Handle("POST /api/v1/proxy-health/tests", s.auth(http.HandlerFunc(s.handleProxyHealthTests)))
-	mux.Handle("GET /api/v1/connectivity", s.auth(http.HandlerFunc(s.handleConnectivity)))
-	mux.Handle("POST /api/v1/connectivity/tests", s.auth(http.HandlerFunc(s.handleConnectivityTests)))
-	mux.Handle("GET /api/v1/providers", s.auth(http.HandlerFunc(s.handleProviders)))
-	mux.Handle("GET /api/v1/diagnostics", s.auth(http.HandlerFunc(s.handleDiagnostics)))
+	mux.Handle("GET /api/v1/connectivity", s.authRO(http.HandlerFunc(s.handleConnectivity)))
+	mux.Handle("POST /api/v1/connectivity/tests", s.authRO(http.HandlerFunc(s.handleConnectivityTests)))
+	mux.Handle("GET /api/v1/providers", s.authRO(http.HandlerFunc(s.handleProviders)))
+	mux.Handle("GET /api/v1/diagnostics", s.authRO(http.HandlerFunc(s.handleDiagnostics)))
 	mux.Handle("POST /api/v1/providers/{name}/refresh", s.auth(http.HandlerFunc(s.handleProviderRefresh)))
-	mux.Handle("GET /api/v1/operations/{id}", s.auth(http.HandlerFunc(s.handleOperation)))
-	mux.Handle("GET /api/v1/operations", s.auth(http.HandlerFunc(s.handleOperations)))
-	mux.Handle("GET /api/v1/events", s.auth(http.HandlerFunc(s.handleEvents)))
+	mux.Handle("GET /api/v1/operations/{id}", s.authRO(http.HandlerFunc(s.handleOperation)))
+	mux.Handle("GET /api/v1/operations", s.authRO(http.HandlerFunc(s.handleOperations)))
+	mux.Handle("GET /api/v1/events", s.authRO(http.HandlerFunc(s.handleEvents)))
 	if s.static != nil {
 		mux.Handle("/", s.static)
 	} else {
@@ -339,6 +428,24 @@ func (s *Server) Serve(ctx context.Context) error {
 		return err
 	}
 	httpServer := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	// The mobile listener is additive. If it cannot be opened the Control
+	// Service must still come up on loopback: losing the phone surface is an
+	// inconvenience, losing the menubar app's control plane is an outage.
+	if s.lanAddr != "" {
+		lanListener, err := net.Listen("tcp4", s.lanAddr)
+		if err != nil {
+			log.Printf("control API: mobile access disabled, cannot listen on %s: %v", s.lanAddr, err)
+			s.lanAddr = ""
+			s.lanBaseURL = ""
+		} else {
+			defer lanListener.Close()
+			go func() {
+				if err := httpServer.Serve(lanListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Printf("control API: mobile listener stopped: %v", err)
+				}
+			}()
+		}
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -358,7 +465,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		if parsed, _, err := net.SplitHostPort(r.Host); err == nil {
 			host = parsed
 		}
-		if host != "127.0.0.1" && host != "localhost" {
+		if !slices.Contains(s.allowedHosts(), host) {
 			writeError(w, http.StatusForbidden, "invalid_host", "request host is not allowed")
 			return
 		}
@@ -370,18 +477,36 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// auth admits only full-authority callers: the native launcher's bearer token
+// or a full-scope browser session. Routes wrapped in this are unreachable from
+// a read-only mobile session.
 func (s *Server) auth(next http.Handler) http.Handler {
+	return s.authScoped(next, scopeFull)
+}
+
+// authRO additionally admits read-only sessions. Every route reachable from the
+// phone must be marked with it explicitly, so a newly added route is closed to
+// mobile until somebody deliberately opens it. Do not use it on a route that
+// mutates gateway, network, or profile state.
+func (s *Server) authRO(next http.Handler) http.Handler {
+	return s.authScoped(next, scopeReadOnly)
+}
+
+func (s *Server) authScoped(next http.Handler, required sessionScope) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		bearerOK := secureEqual(bearer, s.token)
 		sessionOK := false
+		scope := scopeReadOnly
 		if cookie, err := r.Cookie("opensurge_session"); err == nil {
 			now := time.Now()
 			s.mu.Lock()
-			expires, exists := s.sessions[cookie.Value]
-			if exists && now.Before(expires) {
+			session, exists := s.sessions[cookie.Value]
+			if exists && now.Before(session.expires) {
 				sessionOK = true
-				s.sessions[cookie.Value] = now.Add(webSessionIdleTimeout)
+				scope = session.scope
+				session.expires = now.Add(webSessionIdleTimeout)
+				s.sessions[cookie.Value] = session
 			} else if exists {
 				delete(s.sessions, cookie.Value)
 			}
@@ -394,9 +519,15 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "authentication_required", "open the Web GUI using an authenticated launcher link")
 			return
 		}
+		// The bearer token is the native launcher's credential and never enters
+		// a browser, so it keeps full authority.
+		if !bearerOK && scope < required {
+			writeError(w, http.StatusForbidden, "read_only_session", "this session may not change gateway, network, or profile state")
+			return
+		}
 		if !bearerOK && r.Method != http.MethodGet && r.Method != http.MethodHead {
 			origin := r.Header.Get("Origin")
-			if origin != s.baseURL {
+			if !slices.Contains(s.allowedOrigins(), origin) {
 				writeError(w, http.StatusForbidden, "origin_rejected", "mutation origin is not allowed")
 				return
 			}
@@ -420,7 +551,7 @@ func (s *Server) exchangeBootstrap(w http.ResponseWriter, r *http.Request) {
 	session := randomToken(32)
 	now := time.Now()
 	s.mu.Lock()
-	s.sessions[session] = now.Add(webSessionIdleTimeout)
+	s.sessions[session] = webSession{expires: now.Add(webSessionIdleTimeout), scope: grant.scope}
 	s.mu.Unlock()
 	setWebSessionCookie(w, session, now)
 	http.Redirect(w, r, "/"+grant.path, http.StatusFound)
@@ -446,6 +577,10 @@ func (s *Server) handleSessionBootstrap(w http.ResponseWriter, r *http.Request) 
 	}
 	var request struct {
 		Path string `json:"path"`
+		// Surface "mobile" returns the LAN URL to render as a QR code, granting
+		// a read-only session. Anything else returns the loopback URL the
+		// menubar app opens in the Mac's browser, granting a full session.
+		Surface string `json:"surface"`
 	}
 	if r.ContentLength > 0 {
 		if err := decodeJSON(r, &request, 16<<10); err != nil {
@@ -453,7 +588,17 @@ func (s *Server) handleSessionBootstrap(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	url := s.bootstrapURLFor(request.Path)
+	url := ""
+	if request.Surface == "mobile" {
+		mobileURL, err := s.MobileBootstrapURL(request.Path)
+		if err != nil {
+			writeError(w, http.StatusConflict, "mobile_access_disabled", err.Error())
+			return
+		}
+		url = mobileURL
+	} else {
+		url = s.bootstrapURLFor(request.Path)
+	}
 	writeJSON(w, http.StatusCreated, BootstrapResponse{SchemaVersion: SchemaVersion, URL: url, ExpiresAt: time.Now().Add(30 * time.Second).UTC()})
 }
 
