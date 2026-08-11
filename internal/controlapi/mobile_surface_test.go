@@ -19,6 +19,13 @@ import (
 // listed is reachable by whoever holds the phone, over plaintext HTTP, on the
 // segment the gateway serves. Switching an outlet is recoverable; applying a
 // mihomo profile or starting a DHCP takeover is not.
+//
+// These three are not equally scoped. Device selector and connectivity test
+// affect one device and nothing respectively. Policy group selection is
+// household-wide by design: it changes egress for everything routed by that
+// group, choosing among proxies already present in the applied profile. That
+// is intended -- it is the "switch the Selector" the surface exists for -- but
+// do not read the three as uniformly device-scoped.
 var mobileMutations = map[string]bool{
 	"POST /api/v1/devices/{device}/selectors/{slot}": true,
 	"POST /api/v1/policies/{group}/selection":        true,

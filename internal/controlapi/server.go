@@ -427,24 +427,34 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err := writeAtomic(filepath.Join(s.store.Dir(), "control-endpoint.json"), append(data, '\n'), 0o600); err != nil {
 		return err
 	}
-	httpServer := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	// The mobile listener is additive. If it cannot be opened the Control
 	// Service must still come up on loopback: losing the phone surface is an
 	// inconvenience, losing the menubar app's control plane is an outage.
+	//
+	// This runs before any handler is built or served. lanAddr and lanBaseURL
+	// gate allowedHosts/allowedOrigins -- the only DNS-rebinding defense -- and
+	// are read from request goroutines, so they must reach their final value
+	// before the first request can be accepted. Keep this block ahead of
+	// s.Handler() and of every Serve call; do not move it later.
+	var lanListener net.Listener
 	if s.lanAddr != "" {
-		lanListener, err := net.Listen("tcp4", s.lanAddr)
+		lanListener, err = net.Listen("tcp4", s.lanAddr)
 		if err != nil {
 			log.Printf("control API: mobile access disabled, cannot listen on %s: %v", s.lanAddr, err)
+			lanListener = nil
 			s.lanAddr = ""
 			s.lanBaseURL = ""
 		} else {
 			defer lanListener.Close()
-			go func() {
-				if err := httpServer.Serve(lanListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					log.Printf("control API: mobile listener stopped: %v", err)
-				}
-			}()
 		}
+	}
+	httpServer := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	if lanListener != nil {
+		go func() {
+			if err := httpServer.Serve(lanListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("control API: mobile listener stopped: %v", err)
+			}
+		}()
 	}
 	go func() {
 		<-ctx.Done()
