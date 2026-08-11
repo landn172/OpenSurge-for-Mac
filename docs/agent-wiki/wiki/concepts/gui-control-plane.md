@@ -5,6 +5,12 @@ OpenSurge 的完整 GUI 是 `web/` 中的 React 应用，菜单栏 App 是
 launcher。两者都只访问 `cmd/opensurge-control` 提供的 loopback API；业务规则继续位于
 Go gateway、device、mihomo 和 runtime 包中。
 
+loopback-only 是**当前代码的实际状态**，不再是长期边界：
+`sources/decisions/control-plane-lan-exposure.md` 已决定为手机 H5 面开放上游接口地址上的
+局域网监听，并且是「只读为主 + 暂不上 TLS + 手机侧不持 root 等价凭据」这一组绑在一起的
+条件。实现该决策时必须同步更新本段。在实现之前不要把局域网可达当成既有事实；在实现
+之后也不要单独放开写操作——那需要先重新评估 TLS 与凭据模型。
+
 菜单栏 App 唯一拥有的生命周期动作是网关 start/stop：面板顶部的开关，以及打开 App 时
 默认执行一次的自动启动。除此之外它仍然只消费 `/api/v1/menubar`，显示网关、客户端、
 drift 和恢复状态，并通过一次性 bootstrap URL 打开 Web GUI。topology、plan blocker、
@@ -163,6 +169,42 @@ applied 静态设备 inventory，并通过 `connection_error` 明确统计不可
 紧凑并只留低对比参考线。宽屏设备详情不能参与设备列表行高
 计算，否则展开/收起会改变文档高度并造成页面底部滚动跳动；窄屏纵向展开则需要显式
 高度过渡。
+
+`web/src/styles.css` 的响应式是一条自上而下的断点阶梯：1250 / 1150 / 1020 / 840 / 720。
+新增窄屏规则要放进这条阶梯，并且只写这一档真正需要、上一档还没处理的规则——不要复制
+上一档已有的同值声明，更不要把上一档的取值改回去（例如 `.timeline` 在 840 档是 2 列、
+`.source-inventory` 在 840 档是单列，更窄的档必须保持）。判断办法是按选择器逐个比对各
+`@media` 块，而不是只看文件里有没有出现过；本文件有多行压缩长行，行级 grep 会漏掉写在
+长行内部的 `@media`。媒体查询不提升特异度，所以 `.advanced-policy .editor-item`（0-2-0）
+这类带祖先的规则必须用同样带祖先的选择器才盖得住。
+
+840 曾经是 `body{min-width}` 的硬地板，所以 840 以下从未被排版过。地板在 840 档放开，
+同一档还必须修那些「级联从未覆盖、地板一放开就横向溢出」的固定宽度网格：`.device-row`
+最小 794px、`.target-row` 最小 588px、`.device-workbench` 的 240px 侧栏会把详情区压到
+约 104px。外壳翻转放在 720 档而不是 768，因为 9.7"/10.2" iPad 竖屏正好是 768 CSS px，
+它们放得下 64px 竖 rail，不该拿到底部横条形态。
+
+720 档里图标 rail 从左侧竖排翻成固定底部横排，用 `env(safe-area-inset-bottom)` 给 iPhone
+底部横条留白，`.rail-group` 与 `.rail-foot` 用 `display:contents` 保持为 flex 直接子元素。
+触屏没有 hover，所以 `.rail-tip` 必须从悬浮 tooltip 降级成**常显文字标签**（允许折两行），
+不能直接 `display:none`——否则手机上是 8 个无标签图标。`position:sticky` 的元素不受
+`.workspace` 的 `padding-bottom` 影响，必须自己抬到底部 rail 之上；`.sticky-save` 是设备页
+唯一的保存入口，漏掉它等于保存按钮被永久遮住。这一档不改 `App.tsx`，导航项集合与桌面一致。
+
+设备列表在 840 档从 8 列表格变成 `grid-template-areas` 卡片，表头 `.device-row-head` 隐藏；
+两个 RateCell 共用 `.device-rate` 类，靠 `:nth-child(4)` / `(5)` 区分上下行，所以改动
+`DeviceTrafficPanel` 里 `.device-row` 的子元素顺序会静默破坏窄屏布局。迷你趋势图在这一档
+隐藏，展开后的完整趋势卡仍在。
+
+窄屏不得降级 DHCP 接管恢复状态机。它在手机上同样要可见、可操作：当 Mac 的局域网正是
+出问题的那一环时，手机往往是唯一还能打开控制面的设备。上面关于恢复流程必须完整可操作的
+规则不因视口宽度而改变。
+
+jsdom 既不套用样式表也不求值 `@media`，所以 `pnpm test` **无法**发现任何响应式回归，
+纯 CSS 改动也不会让它变红。窄屏改动的验收只能靠真实浏览器，不要用测试通过来声称已验证。
+
+`web/src/api.ts` 全部使用相对路径加 `credentials: 'same-origin'`，控制面因此与 origin 无关；
+这既是移动端适配不需要改前端的原因，也意味着任何改变服务暴露方式的方案都不需要动前端。
 
 HTTPS source 请求使用 mihomo/Clash Meta 兼容的 User-Agent，因为部分订阅服务会按
 客户端标识选择响应格式。草稿只做结构校验；apply 只由 privileged helper 对最终候选

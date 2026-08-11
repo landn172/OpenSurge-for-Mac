@@ -1056,3 +1056,129 @@ html[data-theme="light"] .sort-mark{color:#8ba79c}html[data-theme="light"] .sort
 html[data-theme="light"] .node-name small{color:#5d756b}
 html[data-theme="light"] .node-tested,html[data-theme="light"] .node-grid-foot{color:#5d756b}
 html[data-theme="light"] .group-ratio{color:#4f6a60}html[data-theme="light"] .group-ratio strong{color:#1f6a4c}
+
+/* ── 移动端 / H5 适配 ─────────────────────────────────────────────────────
+   本文件已有一条响应式阶梯：1250 / 1150 / 1020 / 840。它到 840 就停了，因为
+   body{min-width:840px}（:61）是硬地板——840 以下从来没有被真正排版过。
+   下面两档把阶梯续下去。
+
+   分两档而不是一档：
+   · ≤840 放开地板，并修那些「级联从来没覆盖过、一旦地板放开就必然横向溢出」
+     的固定宽度网格（.device-row 最小 794px、.target-row 最小 588px 等）。
+   · ≤720 才做外壳翻转。768 正好是 9.7"/10.2" iPad 竖屏的宽度，那些设备放得下
+     64px 竖 rail，不该拿到底部横条形态，所以阈值取 720。
+
+   凡是 1020 / 1150 / 1250 档已经处理好的规则，这里不重复，也不把它们的取值
+   改回去（.timeline 在 840 档是 2 列、.source-inventory 是单列，均保持）。 */
+
+@media (max-width:840px){
+  body{min-width:320px}
+
+  /* 设备列表：8 列表格（最小 794px）→ grid-template-areas 卡片。
+     子元素顺序固定在 DeviceTrafficPanel.tsx：身份/IP/连接数/上行/下行/迷你图/
+     出口/箭头；两个 RateCell 共用 .device-rate，只能用 nth-child 区分。 */
+  .device-row-head{display:none}
+  .device-row{
+    grid-template-columns:minmax(0,1fr) auto;
+    grid-template-areas:
+      "identity caret"
+      "ip conns"
+      "up down"
+      "egress egress";
+    gap:9px 10px;padding:13px 14px;min-height:44px;
+  }
+  .device-row>.device-identity{grid-area:identity}
+  .device-row>.device-ip{grid-area:ip}
+  .device-row>.device-numeric{grid-area:conns;text-align:right}
+  .device-row>.device-rate:nth-child(4){grid-area:up}
+  .device-row>.device-rate:nth-child(5){grid-area:down}
+  .device-row>.device-spark{display:none}
+  .device-row>.device-egress{grid-area:egress}
+  .device-row>.device-caret{grid-area:caret;align-self:start}
+
+  /* 连通性页主体：每行最小 588px，必然溢出 */
+  .target-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 12px}
+  .connectivity-category-head{grid-template-columns:auto minmax(0,1fr);gap:10px}
+
+  /* 设备页左右分栏：侧栏 240px 下详情区只剩约 104px */
+  .device-workbench{grid-template-columns:minmax(0,1fr)}
+  .device-rail{position:static}
+  .device-defaults{grid-template-columns:minmax(0,1fr)}
+
+  /* 仍是固定 4/5 列、无任何档覆盖的密集统计条 */
+  .gateway-facts,.running-config-inventory{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .now-connections{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;margin:12px 0 0;text-align:left}
+  .readiness-track{grid-template-columns:minmax(0,1fr);gap:8px}
+  .device-detail{grid-template-columns:minmax(0,1fr)}
+  .this-mac .global-groups{grid-template-columns:minmax(0,1fr)}
+
+  /* 表单行：标签/输入上下堆叠。.advanced-policy .editor-item 是 0-2-0，
+     媒体查询不提升特异度，所以必须用同样带祖先的选择器才盖得住。 */
+  .editor-item,.advanced-policy .editor-item,
+  .mode-facts>div,.identity-rebind,.candidate-add{grid-template-columns:minmax(0,1fr)}
+  .config-field-title code{white-space:normal;overflow-wrap:anywhere}
+  .device-routing-mode legend .effect-badge{float:none;display:inline-block;margin-top:4px}
+
+  /* 这些 flex 行都不 wrap，窄屏必溢出 */
+  .recovery-card-actions,.recovery-actions,.dialog-actions,.save-stages,
+  .running-config-head,.running-config-drift,.stale-bar,.source-diff{flex-wrap:wrap}
+
+  /* 对话框：固定 24px padding + min() 宽度在手机上过挤 */
+  .reload-dialog{width:calc(100vw - 24px);padding:18px}
+  .registration-dialog,.outlet-dialog{width:calc(100vw - 24px)}
+}
+
+@media (max-width:720px){
+  /* 外壳：图标 rail 从左侧竖排翻成固定底部横排 */
+  .app-shell{grid-template-columns:minmax(0,1fr)}
+  .stage{grid-column:1}
+
+  .rail{
+    inset:auto 0 0 0;width:auto;height:auto;
+    flex-direction:row;justify-content:space-around;align-items:flex-start;
+    gap:2px;padding:6px 4px calc(6px + env(safe-area-inset-bottom));
+    border-right:0;border-top:1px solid var(--border);
+    background:oklch(from var(--surface) l c h / .94);backdrop-filter:blur(18px);
+  }
+  .rail-mark,.rail-sep{display:none}
+  .rail-group,.rail-foot{display:contents}
+
+  /* 触屏没有 hover，所以 tooltip 必须降级成常显标签，否则就是 8 个无标签图标。
+     标签允许折到两行，「代理与规则源」这种长名在 46px 内也放得下。 */
+  .rail-item{
+    width:auto;min-width:44px;max-width:52px;height:auto;min-height:44px;
+    display:flex;flex-direction:column;align-items:center;justify-content:flex-start;
+    gap:3px;padding:5px 2px;
+  }
+  .rail-item.active::after{left:6px;right:6px;top:auto;bottom:-4px;width:auto;height:2px}
+  .rail-tip{
+    position:static;transform:none;opacity:1;z-index:auto;
+    padding:0;border:0;background:none;box-shadow:none;
+    max-width:46px;color:inherit;font-size:8.5px;line-height:1.15;
+    white-space:normal;overflow-wrap:anywhere;text-align:center;
+  }
+  .rail-item:hover .rail-tip,.rail-item:focus-visible .rail-tip{opacity:1;transform:none}
+
+  /* 命令条与工作区：收窄留白，底部给 rail 让位 */
+  .cmdbar{gap:10px;min-height:56px;padding:10px 16px}
+  .cmd-title h1{font-size:17px}
+  .status-chip{padding:5px 10px;font-size:11px}
+  .workspace{padding:16px 16px calc(104px + env(safe-area-inset-bottom))}
+  .page-lead{max-width:none}
+
+  /* sticky 元素不受 workspace 的 padding-bottom 影响，必须自己抬到 rail 之上。
+     .sticky-save 是设备页唯一的保存入口，漏掉这条就等于保存按钮被永久遮住。 */
+  .sticky-save{bottom:calc(84px + env(safe-area-inset-bottom));gap:12px;flex-wrap:wrap}
+
+  /* 卡片内边距：25px 在 390px 下白白吃掉约 22px 内容宽 */
+  .section,.now-panel,.gateway-status,.device-section{padding:16px}
+  .trend-chart svg{height:112px}
+
+  /* 触控目标：Apple HIG 最小 44px。注意类名是 .ghost-action，不是 .ghost。 */
+  .source-actions button,.source-action-button,
+  button.primary,button.ghost-action{min-height:44px}
+
+  /* .log-pane pre 已经是 pre-wrap + overflow-wrap:anywhere，折行本来就是
+     想要的行为，这里只把可视高度再收一点。 */
+  .log-pane{max-height:300px}
+}
