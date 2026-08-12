@@ -80,10 +80,19 @@ type Server struct {
 	lanAddr    string
 	lanBaseURL string
 
+	devices *deviceRegistry
+
 	mu         sync.Mutex
 	sessions   map[string]webSession
 	bootstraps map[string]bootstrapGrant
+	pairings   map[string]*pendingPairing
 }
+
+const (
+	deviceCookieName      = "opensurge_device"
+	pairClaimCookie       = "opensurge_pair_claim"
+	pairedDeviceCookieTTL = 90 * 24 * time.Hour
+)
 
 // sessionScope is what a browser session is allowed to do. The zero value is
 // deliberately the restricted one: a session that somehow reaches the auth
@@ -192,6 +201,10 @@ func New(options Options) (*Server, error) {
 	} else if err := migrateSourceCredentials(context.Background(), store, options.Credentials); err != nil {
 		return nil, err
 	}
+	devices, err := newDeviceRegistry(options.StoreDir)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		configPath:        configPath,
 		addr:              options.Addr,
@@ -216,8 +229,10 @@ func New(options Options) (*Server, error) {
 		baseURL:           "http://" + options.Addr,
 		lanAddr:           lanAddr,
 		lanBaseURL:        lanBaseURL,
+		devices:           devices,
 		sessions:          map[string]webSession{},
 		bootstraps:        map[string]bootstrapGrant{},
+		pairings:          map[string]*pendingPairing{},
 	}, nil
 }
 
@@ -261,15 +276,11 @@ func (s *Server) bootstrapURLFor(path string) string {
 // MobileAccessEnabled reports whether a phone-reachable listener exists.
 func (s *Server) MobileAccessEnabled() bool { return s.lanBaseURL != "" }
 
-// MobileBootstrapURL is the value to render as a QR code. It is built on the
-// LAN base URL, not the loopback one -- a QR encoding 127.0.0.1 would point the
-// phone at itself -- and it grants a read-only session.
-func (s *Server) MobileBootstrapURL(path string) (string, error) {
-	if s.lanBaseURL == "" {
-		return "", fmt.Errorf("mobile access is not enabled")
-	}
-	return s.bootstrapURL(path, s.lanBaseURL, scopeReadOnly), nil
-}
+// There is deliberately no "mint a phone session from a QR" call. A QR is a
+// bearer secret that anyone who photographs the screen holds, so scanning must
+// not by itself grant access. Phones get in through device pairing
+// (POST /api/v1/pairings), which requires the code shown on the phone to be
+// typed on the Mac and produces a named, revocable whitelist entry.
 
 func (s *Server) bootstrapURL(path, base string, scope sessionScope) string {
 	path = allowedWebPath(path)
@@ -284,6 +295,20 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /bootstrap", s.exchangeBootstrap)
 	mux.HandleFunc("POST /api/v1/session/bootstrap", s.handleSessionBootstrap)
+	// The pairing pages are unauthenticated by necessity: the phone has no
+	// credential until pairing completes. They are still behind the Host
+	// allowlist, and scanning alone grants access to nothing -- the binding is
+	// only finished by typing the phone's code on the Mac.
+	mux.HandleFunc("GET /pair", s.handlePairScan)
+	mux.HandleFunc("GET /pair/status", s.handlePairStatus)
+	// Managing the whitelist is full authority only: a phone must never be able
+	// to enroll another phone, nor revoke the device that supervises it.
+	mux.Handle("POST /api/v1/pairings", s.auth(http.HandlerFunc(s.handlePairings)))
+	mux.Handle("GET /api/v1/pairings/{id}", s.auth(http.HandlerFunc(s.handlePairingStatus)))
+	mux.Handle("POST /api/v1/pairings/{id}/confirm", s.auth(http.HandlerFunc(s.handlePairingConfirm)))
+	mux.Handle("DELETE /api/v1/pairings/{id}", s.auth(http.HandlerFunc(s.handlePairingCancel)))
+	mux.Handle("GET /api/v1/paired-devices", s.auth(http.HandlerFunc(s.handlePairedDevices)))
+	mux.Handle("DELETE /api/v1/paired-devices/{id}", s.auth(http.HandlerFunc(s.handlePairedDeviceRevoke)))
 	mux.Handle("GET /api/v1/overview", s.authRO(http.HandlerFunc(s.handleOverview)))
 	mux.Handle("GET /api/v1/config", s.authRO(http.HandlerFunc(s.handleControlConfig)))
 	mux.Handle("PUT /api/v1/config", s.auth(http.HandlerFunc(s.handleControlConfig)))
@@ -508,6 +533,17 @@ func (s *Server) authScoped(next http.Handler, required sessionScope) http.Handl
 		bearerOK := secureEqual(bearer, s.token)
 		sessionOK := false
 		scope := scopeReadOnly
+		// A paired device presents a long-lived token instead of a bootstrap
+		// session. The registry is consulted on every request, so revoking a
+		// device on the Mac takes effect immediately rather than whenever some
+		// cached session happens to expire.
+		if cookie, err := r.Cookie(deviceCookieName); err == nil {
+			if _, ok := s.devices.lookup(cookie.Value); ok {
+				sessionOK = true
+				scope = scopeReadOnly
+				s.devices.touch(cookie.Value, remoteIP(r))
+			}
+		}
 		if cookie, err := r.Cookie("opensurge_session"); err == nil {
 			now := time.Now()
 			s.mu.Lock()
@@ -587,10 +623,6 @@ func (s *Server) handleSessionBootstrap(w http.ResponseWriter, r *http.Request) 
 	}
 	var request struct {
 		Path string `json:"path"`
-		// Surface "mobile" returns the LAN URL to render as a QR code, granting
-		// a read-only session. Anything else returns the loopback URL the
-		// menubar app opens in the Mac's browser, granting a full session.
-		Surface string `json:"surface"`
 	}
 	if r.ContentLength > 0 {
 		if err := decodeJSON(r, &request, 16<<10); err != nil {
@@ -598,17 +630,7 @@ func (s *Server) handleSessionBootstrap(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	url := ""
-	if request.Surface == "mobile" {
-		mobileURL, err := s.MobileBootstrapURL(request.Path)
-		if err != nil {
-			writeError(w, http.StatusConflict, "mobile_access_disabled", err.Error())
-			return
-		}
-		url = mobileURL
-	} else {
-		url = s.bootstrapURLFor(request.Path)
-	}
+	url := s.bootstrapURLFor(request.Path)
 	writeJSON(w, http.StatusCreated, BootstrapResponse{SchemaVersion: SchemaVersion, URL: url, ExpiresAt: time.Now().Add(30 * time.Second).UTC()})
 }
 

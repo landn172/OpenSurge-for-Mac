@@ -42,12 +42,7 @@ func main() {
 	fmt.Printf("OpenSurge Control API: %s\n", *addr)
 	fmt.Printf("Open Web GUI: %s\n", server.BootstrapURL())
 	if server.MobileAccessEnabled() {
-		// Printed as a plain URL for development. In the product this value is
-		// rendered as a QR code by the menubar app; the 30-second code lifetime
-		// makes retyping it impractical.
-		if mobileURL, err := server.MobileBootstrapURL("dashboard"); err == nil {
-			fmt.Printf("Open on a phone (read-only): %s\n", mobileURL)
-		}
+		fmt.Println("Mobile access is on. Pair a phone from the Web GUI's paired-devices page.")
 	}
 	if err := server.Serve(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)

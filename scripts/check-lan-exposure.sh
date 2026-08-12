@@ -102,36 +102,68 @@ for host in evil.example.com attacker.test "evil.example.com:$PORT"; do
 done
 
 echo
-echo "4. read-only phone session cannot drive the gateway"
-BOOTSTRAP_JSON="$(curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"path":"dashboard","surface":"mobile"}' "http://127.0.0.1:$PORT/api/v1/session/bootstrap" 2>/dev/null || true)"
-MOBILE_URL="$(printf '%s' "$BOOTSTRAP_JSON" | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+echo "4. scanning alone grants nothing; pairing needs the code typed on the Mac"
+PAIR_JSON="$(curl -sS -X POST -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/api/v1/pairings" 2>/dev/null || true)"
+PAIR_URL="$(printf '%s' "$PAIR_JSON" | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+PAIR_ID="$(printf '%s' "$PAIR_JSON" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 
-if [[ -z "$MOBILE_URL" ]]; then
-  fail "no mobile bootstrap URL issued (response: $BOOTSTRAP_JSON)"
+if [[ -z "$PAIR_URL" || -z "$PAIR_ID" ]]; then
+  fail "no pairing was created (response: $PAIR_JSON)"
 else
-  case "$MOBILE_URL" in
-    "http://$LAN_IP:$PORT/"*) pass "mobile bootstrap URL is built on the LAN address" ;;
-    *) fail "mobile bootstrap URL is not phone-reachable: $MOBILE_URL" ;;
+  case "$PAIR_URL" in
+    "http://$LAN_IP:$PORT/pair?p="*) pass "pairing URL is phone-reachable" ;;
+    *) fail "pairing URL is not phone-reachable: $PAIR_URL" ;;
   esac
 
-  COOKIES="$WORK/cookies.txt"
-  curl -sS -o /dev/null -c "$COOKIES" "$MOBILE_URL" 2>/dev/null || true
+  PHONE="$WORK/phone.txt"
+  SCAN_BODY="$(curl -sS -c "$PHONE" "$PAIR_URL" 2>/dev/null || true)"
+  CODE="$(printf '%s' "$SCAN_BODY" | sed -n 's/.*class="code">\([0-9]\{6\}\)<.*/\1/p')"
+  [[ -n "$CODE" ]] && pass "phone shows a 6-digit pair code" || fail "phone did not receive a pair code"
 
-  code="$(curl -sS -o /dev/null -w '%{http_code}' -b "$COOKIES" "http://$LAN_IP:$PORT/api/v1/overview" 2>/dev/null || echo 000)"
-  [[ "$code" == "200" ]] && pass "read-only session can read /api/v1/overview" || fail "read-only session read returned $code, want 200"
+  # The whole point: the scan by itself must not authenticate.
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -b "$PHONE" "http://$LAN_IP:$PORT/api/v1/overview" 2>/dev/null || echo 000)"
+  [[ "$code" == "401" ]] && pass "scan alone does NOT authenticate ($code)" || fail "scan alone returned $code, want 401"
 
-  for route in /api/v1/gateway/start /api/v1/gateway/stop /api/v1/sources; do
-    code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -b "$COOKIES" \
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -d '{"code":"000000","name":"wrong"}' \
+    "http://127.0.0.1:$PORT/api/v1/pairings/$PAIR_ID/confirm" 2>/dev/null || echo 000)"
+  [[ "$code" == "403" ]] && pass "wrong pair code rejected ($code)" || fail "wrong pair code returned $code, want 403"
+
+  curl -sS -o /dev/null -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"code\":\"$CODE\",\"name\":\"gate-check phone\"}" \
+    "http://127.0.0.1:$PORT/api/v1/pairings/$PAIR_ID/confirm" 2>/dev/null || true
+
+  curl -sS -o /dev/null -b "$PHONE" -c "$PHONE" "http://$LAN_IP:$PORT/pair/status?p=$PAIR_ID" 2>/dev/null || true
+  grep -q opensurge_device "$PHONE" && pass "phone received a device credential after confirmation" || fail "phone never received a device credential"
+
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -b "$PHONE" "http://$LAN_IP:$PORT/api/v1/overview" 2>/dev/null || echo 000)"
+  [[ "$code" == "200" ]] && pass "paired device can read" || fail "paired device read returned $code, want 200"
+
+  for route in /api/v1/gateway/start /api/v1/sources; do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -b "$PHONE" \
       -H "Origin: http://$LAN_IP:$PORT" -H 'Content-Type: application/json' -d '{}' \
       "http://$LAN_IP:$PORT$route" 2>/dev/null || echo 000)"
-    [[ "$code" == "403" ]] && pass "read-only session POST $route -> 403" || fail "read-only session POST $route returned $code, want 403"
+    [[ "$code" == "403" ]] && pass "paired device POST $route -> 403" || fail "paired device POST $route returned $code, want 403"
   done
 
-  code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -b "$COOKIES" \
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -b "$PHONE" \
     -H "Origin: http://evil.example.com" -H 'Content-Type: application/json' -d '{}' \
     "http://$LAN_IP:$PORT/api/v1/connectivity/tests" 2>/dev/null || echo 000)"
   [[ "$code" == "403" ]] && pass "foreign Origin refused on an allowed mobile mutation" || fail "foreign Origin returned $code, want 403"
+
+  echo
+  echo "5. revocation takes effect immediately"
+  DEV_ID="$(curl -sS -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/api/v1/paired-devices" 2>/dev/null \
+    | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  if [[ -z "$DEV_ID" ]]; then
+    fail "paired device is not listed in the whitelist"
+  else
+    pass "device appears in the whitelist"
+    curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $TOKEN" \
+      "http://127.0.0.1:$PORT/api/v1/paired-devices/$DEV_ID" 2>/dev/null || true
+    code="$(curl -sS -o /dev/null -w '%{http_code}' -b "$PHONE" "http://$LAN_IP:$PORT/api/v1/overview" 2>/dev/null || echo 000)"
+    [[ "$code" == "401" ]] && pass "revoked device is refused on the next request ($code)" || fail "revoked device returned $code, want 401"
+  fi
 fi
 
 echo

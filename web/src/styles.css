@@ -1182,3 +1182,40 @@ html[data-theme="light"] .group-ratio{color:#4f6a60}html[data-theme="light"] .gr
      想要的行为，这里只把可视高度再收一点。 */
   .log-pane{max-height:300px}
 }
+
+/* 已配对设备页。配对面板左右两栏：左边二维码，右边输入手机上显示的配对码。 */
+.pair-lead{margin:0 0 16px;color:var(--muted);font-size:13px;line-height:1.65;max-width:66ch}
+.pair-grid{display:grid;grid-template-columns:320px minmax(0,1fr);gap:26px;align-items:start;margin-top:16px}
+.pair-qr-side{display:grid;justify-items:center;gap:8px}
+.pair-qr{width:320px;height:320px;border-radius:14px;background:#fff;padding:10px}
+.pair-qr-fallback{width:320px;padding:18px;border:1px dashed var(--border-strong);border-radius:14px;background:var(--surface-2)}
+.pair-qr-fallback code{font-family:var(--font-mono);font-size:11px;overflow-wrap:anywhere}
+.pair-step{margin:6px 0 0;font-weight:600;font-size:13px}
+.pair-hint{margin:0;color:var(--muted);font-size:11.5px;line-height:1.55;text-align:center}
+.pair-form-side{display:grid;gap:14px;align-content:start}
+.pair-form-side label{display:grid;gap:6px}
+.pair-form-side label>span{color:var(--muted);font-size:11px;font-weight:650}
+.pair-form-side input{width:100%;padding:11px 12px;border:1px solid var(--border);border-radius:10px;
+  background:var(--surface-2);color:var(--fg)}
+.pair-form-side input:disabled{opacity:.5}
+.pair-code-input{font-family:var(--font-mono);font-size:24px;letter-spacing:.28em;text-align:center;
+  font-variant-numeric:tabular-nums}
+.pair-state{margin:0;padding:10px 12px;border:1px solid var(--border);border-radius:10px;
+  background:var(--surface-2);color:var(--muted);font-size:12px}
+.pair-state.claimed{border-color:var(--border-strong);background:var(--tint-ok);color:var(--ok);font-weight:600}
+.pair-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:2px}
+.paired-list{display:grid;gap:10px;margin-top:14px}
+.paired-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) auto;gap:14px;align-items:center;
+  padding:13px 15px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+.paired-identity{display:grid;gap:2px;min-width:0}
+.paired-identity strong{font-size:14px}
+.paired-identity small{color:var(--muted);font-size:10.5px}
+.paired-seen{color:var(--muted);font-size:11.5px;min-width:0}
+.paired-seen code{font-family:var(--font-mono);font-size:10.5px}
+
+@media (max-width:840px){
+  .pair-grid{grid-template-columns:minmax(0,1fr);gap:20px}
+  .pair-qr,.pair-qr-fallback{width:100%;max-width:300px;height:auto;aspect-ratio:1}
+  .paired-row{grid-template-columns:minmax(0,1fr) auto;gap:8px 12px}
+  .paired-seen{grid-column:1/-1}
+}

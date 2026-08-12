@@ -23,6 +23,10 @@ export function RailIconSprite() {
       <symbol id="icon-sources" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
         <path d="m12 3 8.5 4.5L12 12 3.5 7.5 12 3Z" /><path d="m3.5 12.5 8.5 4.5 8.5-4.5" />
       </symbol>
+      <symbol id="icon-paired" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="6" y="2.5" width="12" height="19" rx="2.5" /><path d="M10.5 5.5h3" />
+        <path d="M9.5 13.2l1.8 1.8 3.2-3.4" />
+      </symbol>
       <symbol id="icon-devices" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2.5" y="4" width="19" height="12" rx="1.8" /><path d="M8.5 20h7M12 16v4" />
       </symbol>

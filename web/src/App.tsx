@@ -7,6 +7,7 @@ import { ShellSlots } from './components/ShellSlots'
 import { DashboardPage } from './pages/DashboardPage'
 import { ConnectivityPage } from './pages/ConnectivityPage'
 import { DevicesPage } from './pages/DevicesPage'
+import { PairedDevicesPage } from './pages/PairedDevicesPage'
 import { DiagnosticsPage } from './pages/DiagnosticsPage'
 import { NetworkPage } from './pages/NetworkPage'
 import { PoliciesPage } from './pages/PoliciesPage'
@@ -15,7 +16,7 @@ import { needsNetworkRecoveryWarning } from './recovery'
 import { statusLabel } from './status'
 import type { Overview } from './types'
 
-type Page = 'dashboard' | 'network' | 'sources' | 'devices' | 'policies' | 'connectivity' | 'diagnostics'
+type Page = 'dashboard' | 'network' | 'sources' | 'devices' | 'paired' | 'policies' | 'connectivity' | 'diagnostics'
 type Theme = 'dark' | 'light'
 type NetworkNavigationTarget = 'none' | 'control' | 'bottom'
 
@@ -32,6 +33,7 @@ const navGroups = [
     { id: 'network', label: '网络设置', icon: 'network' },
     { id: 'sources', label: '代理与规则源', icon: 'sources' },
     { id: 'devices', label: '设备', icon: 'devices' },
+    { id: 'paired', label: '已配对设备', icon: 'paired' },
     { id: 'policies', label: '策略', icon: 'policies' },
   ],
 ] as const satisfies ReadonlyArray<ReadonlyArray<{ id: Page; label: string; icon: string }>>
@@ -203,6 +205,7 @@ export function App() {
               {page === 'network' && <NetworkPage overview={overview} onChanged={refresh} onNavigate={() => go('devices')} />}
               {page === 'sources' && <SourcesPage overview={overview} onChanged={refresh} />}
               {page === 'devices' && <DevicesPage overview={overview} onChanged={refresh} onNavigate={go} onDirtyChange={setDevicesDirty} />}
+              {page === 'paired' && <PairedDevicesPage />}
               {page === 'policies' && <PoliciesPage overview={overview} onChanged={refresh} />}
               {page === 'connectivity' && <ConnectivityPage overview={overview} onChanged={refresh} />}
               {page === 'diagnostics' && <DiagnosticsPage overview={overview} />}

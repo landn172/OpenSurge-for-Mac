@@ -1,4 +1,4 @@
-import type { APIError, ConnectivityResponse, ControlConfig, DevicePolicyDocument, DevicesResponse, DeviceTraffic, Diagnostics, GatewayPlan, LocalRouting, LocalRoutingMode, NetworkInterfacesResponse, Operation, Overview, PolicySet, ProxyGroup, ProxyHealthSnapshot, ProxyHealthTestResponse, Source } from './types'
+import type { APIError, PairedDeviceList, Pairing, ConnectivityResponse, ControlConfig, DevicePolicyDocument, DevicesResponse, DeviceTraffic, Diagnostics, GatewayPlan, LocalRouting, LocalRoutingMode, NetworkInterfacesResponse, Operation, Overview, PolicySet, ProxyGroup, ProxyHealthSnapshot, ProxyHealthTestResponse, Source } from './types'
 
 export class RequestError extends Error {
   constructor(public status: number, public code: string, message: string) {
@@ -25,6 +25,13 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   overview: () => request<Overview>('/api/v1/overview'),
+  pairedDevices: () => request<PairedDeviceList>('/api/v1/paired-devices'),
+  revokePairedDevice: (id: string) => request<void>(`/api/v1/paired-devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  startPairing: () => request<Pairing>('/api/v1/pairings', { method: 'POST' }),
+  pairingStatus: (id: string) => request<Pairing>(`/api/v1/pairings/${encodeURIComponent(id)}`),
+  confirmPairing: (id: string, code: string, name: string) =>
+    request<void>(`/api/v1/pairings/${encodeURIComponent(id)}/confirm`, { method: 'POST', body: JSON.stringify({ code, name }) }),
+  cancelPairing: (id: string) => request<void>(`/api/v1/pairings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   config: () => request<ControlConfig>('/api/v1/config'),
   networkInterfaces: () => request<NetworkInterfacesResponse>('/api/v1/network/interfaces'),
   saveConfig: (config: ControlConfig) => request<ControlConfig>('/api/v1/config', { method: 'PUT', headers: { 'If-Match': `"${config.revision}"` }, body: JSON.stringify(config) }),

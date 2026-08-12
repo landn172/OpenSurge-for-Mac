@@ -196,33 +196,6 @@ func TestLANOriginIsAcceptedForAllowedMobileMutation(t *testing.T) {
 	}
 }
 
-// A QR code built on baseURL would encode 127.0.0.1 and point the phone at
-// itself. The mobile bootstrap URL must be built on the LAN base URL, and the
-// session it grants must be read-only.
-func TestMobileBootstrapURLUsesLANBaseAndGrantsReadOnly(t *testing.T) {
-	server := mobileServer(t)
-	url, err := server.MobileBootstrapURL("devices")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(url, server.lanBaseURL+"/bootstrap?code=") {
-		t.Fatalf("mobile bootstrap URL is not built on the LAN base: %s", url)
-	}
-	code := strings.TrimPrefix(url, server.lanBaseURL+"/bootstrap?code=")
-	server.mu.Lock()
-	grant, ok := server.bootstraps[code]
-	server.mu.Unlock()
-	if !ok {
-		t.Fatal("mobile bootstrap code was not recorded")
-	}
-	if grant.scope != scopeReadOnly {
-		t.Fatalf("mobile bootstrap granted scope %v, want read-only", grant.scope)
-	}
-	if grant.path != "devices" {
-		t.Fatalf("mobile bootstrap path=%q", grant.path)
-	}
-}
-
 func TestMacBootstrapURLStaysLoopbackAndFullScope(t *testing.T) {
 	server := mobileServer(t)
 	url := server.BootstrapURL()
@@ -238,21 +211,11 @@ func TestMacBootstrapURLStaysLoopbackAndFullScope(t *testing.T) {
 	}
 }
 
-func TestMobileBootstrapFailsWhenMobileAccessDisabled(t *testing.T) {
-	server := newTestServer(t)
-	if _, err := server.MobileBootstrapURL("dashboard"); err == nil {
-		t.Fatal("mobile bootstrap URL was issued while mobile access is disabled")
-	}
-}
-
 // The exchanged cookie must carry the grant's scope, otherwise a read-only QR
 // would mint a full-authority session.
 func TestBootstrapExchangeCarriesGrantScope(t *testing.T) {
 	server := mobileServer(t)
-	url, err := server.MobileBootstrapURL("dashboard")
-	if err != nil {
-		t.Fatal(err)
-	}
+	url := server.bootstrapURL("dashboard", server.lanBaseURL, scopeReadOnly)
 	code := strings.TrimPrefix(url, server.lanBaseURL+"/bootstrap?code=")
 
 	request := httptest.NewRequest(http.MethodGet, "http://"+testLANIP+":61767/bootstrap?code="+code, nil)
