@@ -21,16 +21,31 @@ type PairingResponse struct {
 }
 
 type PairedDeviceListResponse struct {
-	SchemaVersion int            `json:"schema_version"`
-	Devices       []PairedDevice `json:"devices"`
-	MobileEnabled bool           `json:"mobile_enabled"`
-	PairBaseURL   string         `json:"pair_base_url,omitempty"`
+	SchemaVersion int                  `json:"schema_version"`
+	Devices       []PairedDevice       `json:"devices"`
+	MobileEnabled bool                 `json:"mobile_enabled"`
+	PairBaseURL   string               `json:"pair_base_url,omitempty"`
+	MobileAccess  MobileAccessResponse `json:"mobile_access"`
+}
+
+type MobileAccessRequest struct {
+	Enabled   bool   `json:"enabled"`
+	Interface string `json:"interface"`
+}
+
+type MobileAccessResponse struct {
+	SchemaVersion int    `json:"schema_version"`
+	Enabled       bool   `json:"enabled"`
+	Interface     string `json:"interface,omitempty"`
+	Address       string `json:"address,omitempty"`
+	BaseURL       string `json:"base_url,omitempty"`
 }
 
 // handlePairings creates a pending pairing and returns the URL to render as a
 // QR code. Full authority only: starting a pairing is how a new device gets in.
 func (s *Server) handlePairings(w http.ResponseWriter, r *http.Request) {
-	if s.lanBaseURL == "" {
+	_, _, baseURL := s.mobileAccessSnapshot()
+	if baseURL == "" {
 		writeError(w, http.StatusConflict, "mobile_access_disabled", "mobile access is not enabled on this Control Service")
 		return
 	}
@@ -43,7 +58,7 @@ func (s *Server) handlePairings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, PairingResponse{
 		SchemaVersion: SchemaVersion,
 		ID:            id,
-		URL:           s.lanBaseURL + "/pair?p=" + id,
+		URL:           baseURL + "/pair?p=" + id,
 		State:         string(pairingPending),
 		ExpiresAt:     pairing.expires.UTC(),
 		AttemptsLeft:  pairingMaxAttempts,
@@ -61,7 +76,7 @@ func (s *Server) handlePairingStatus(w http.ResponseWriter, r *http.Request) {
 		response = PairingResponse{
 			SchemaVersion: SchemaVersion,
 			ID:            id,
-			URL:           s.lanBaseURL + "/pair?p=" + id,
+			URL:           s.pairURL(id),
 			State:         string(pairing.state),
 			ExpiresAt:     pairing.expires.UTC(),
 			AttemptsLeft:  pairingMaxAttempts - pairing.attempts,
@@ -154,12 +169,35 @@ func (s *Server) handlePairingCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePairedDevices(w http.ResponseWriter, r *http.Request) {
+	mobileAccess := s.mobileAccessResponse()
 	writeJSON(w, http.StatusOK, PairedDeviceListResponse{
 		SchemaVersion: SchemaVersion,
 		Devices:       s.devices.list(),
-		MobileEnabled: s.lanBaseURL != "",
-		PairBaseURL:   s.lanBaseURL,
+		MobileEnabled: mobileAccess.Enabled,
+		PairBaseURL:   mobileAccess.BaseURL,
+		MobileAccess:  mobileAccess,
 	})
+}
+
+func (s *Server) pairURL(id string) string {
+	_, _, baseURL := s.mobileAccessSnapshot()
+	return baseURL + "/pair?p=" + id
+}
+
+// handleMobileAccess updates the phone listener from the trusted Mac control
+// plane only. A read-only device can never enable exposure or choose an
+// interface for itself.
+func (s *Server) handleMobileAccess(w http.ResponseWriter, r *http.Request) {
+	var request MobileAccessRequest
+	if err := decodeJSON(r, &request, 16<<10); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := s.setMobileAccess(MobileAccessSettings{Enabled: request.Enabled, Interface: request.Interface}); err != nil {
+		writeError(w, http.StatusBadRequest, "mobile_access_update_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.mobileAccessResponse())
 }
 
 func (s *Server) handlePairedDeviceRevoke(w http.ResponseWriter, r *http.Request) {

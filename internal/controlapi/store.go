@@ -19,6 +19,17 @@ type Store struct {
 	mu  sync.Mutex
 }
 
+const mobileAccessFile = "mobile-access.json"
+
+// MobileAccessSettings is deliberately separate from the gateway configuration:
+// it controls the trusted Mac control plane listener, not DHCP, DNS, or the
+// gateway data plane. The default remains loopback-only.
+type MobileAccessSettings struct {
+	SchemaVersion int    `json:"schema_version"`
+	Enabled       bool   `json:"enabled"`
+	Interface     string `json:"interface,omitempty"`
+}
+
 func NewStore(dir string) *Store { return &Store{dir: dir} }
 
 func (s *Store) Dir() string { return s.dir }
@@ -52,6 +63,56 @@ func (s *Store) Token() (string, error) {
 		return "", err
 	}
 	return token, nil
+}
+
+func (s *Store) MobileAccess() (MobileAccessSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var settings MobileAccessSettings
+	err := readJSON(filepath.Join(s.dir, mobileAccessFile), &settings)
+	if errors.Is(err, os.ErrNotExist) {
+		return MobileAccessSettings{SchemaVersion: SchemaVersion}, nil
+	}
+	if err != nil {
+		return MobileAccessSettings{}, err
+	}
+	if settings.SchemaVersion != SchemaVersion {
+		return MobileAccessSettings{}, fmt.Errorf("unsupported mobile access schema version %d", settings.SchemaVersion)
+	}
+	if !settings.Enabled {
+		settings.Interface = ""
+	}
+	return settings, nil
+}
+
+// HasMobileAccessSettings tells startup whether a user has made an explicit
+// GUI choice. It distinguishes that choice of "off" from a fresh install,
+// where a legacy command-line interface may still supply an initial value.
+func (s *Store) HasMobileAccessSettings() (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := os.Stat(filepath.Join(s.dir, mobileAccessFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) SaveMobileAccess(settings MobileAccessSettings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings.SchemaVersion = SchemaVersion
+	if !settings.Enabled {
+		settings.Interface = ""
+	}
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomic(filepath.Join(s.dir, mobileAccessFile), append(data, '\n'), 0o600)
 }
 
 func (s *Store) Recovery() (RecoveryState, error) {

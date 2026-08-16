@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"open-mihomo-gateway/internal/controlapi"
@@ -20,6 +21,34 @@ func main() {
 	direct := flag.Bool("direct-root", false, "run actions directly; requires root and is intended for development")
 	lanInterface := flag.String("mobile-interface", "", "interface name whose IPv4 address also accepts connections, enabling the read-only phone surface; empty keeps the service loopback-only")
 	flag.Parse()
+	resolvedStoreDir := *storeDir
+	if resolvedStoreDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		resolvedStoreDir = filepath.Join(home, "Library", "Application Support", "OpenSurge")
+	}
+	// The packaged LaunchAgent intentionally omits -mobile-interface. If a
+	// user has made a GUI choice, it is authoritative even when an older local
+	// LaunchAgent still carries that legacy argument, so turning the switch off
+	// cannot be undone by a later service restart.
+	store := controlapi.NewStore(resolvedStoreDir)
+	if configured, err := store.HasMobileAccessSettings(); err != nil {
+		fmt.Fprintln(os.Stderr, "check mobile access settings:", err)
+		os.Exit(1)
+	} else if configured {
+		settings, err := store.MobileAccess()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "read mobile access settings:", err)
+			os.Exit(1)
+		}
+		*lanInterface = ""
+		if settings.Enabled {
+			*lanInterface = settings.Interface
+		}
+	}
 
 	runner := controlapi.ActionRunner(controlapi.HelperClient{SocketPath: *helperSocket})
 	if *direct {
@@ -28,7 +57,7 @@ func main() {
 	server, err := controlapi.New(controlapi.Options{
 		ConfigPath:   *configPath,
 		Addr:         *addr,
-		StoreDir:     *storeDir,
+		StoreDir:     resolvedStoreDir,
 		Runner:       runner,
 		Static:       webui.Handler(),
 		LANInterface: *lanInterface,

@@ -7,8 +7,11 @@ Go gateway、device、mihomo 和 runtime 包中。
 
 loopback 仍是**默认**，但不再是唯一形态。按
 `sources/decisions/control-plane-lan-exposure.md`，Control Service 可以额外在上游接口的
-IPv4 地址上开第二个 listener，供手机 H5 面使用。开关是 `-mobile-interface <接口名>`，
-默认空即保持 loopback-only；**shipped 的 launchd plist 不传这个参数**。
+IPv4 地址上开第二个 listener，供手机 H5 面使用。用户从“已配对设备”页明确打开
+“手机控制面”开关并选择接口；服务会即时增删这个 listener，并把选择保存为
+`mobile-access.json`（0600），下次启动自动恢复。`-mobile-interface <接口名>`保留为
+开发/运维的初始覆盖，但一旦用户操作 GUI 开关，持久化选择优先；**shipped 的 launchd
+plist 不传这个参数**。
 
 局域网 listener 是**附加**的，不替换 loopback。这一点是有意的：`control-endpoint.json`、
 菜单栏 App 和 CLI banner 因此保持原有契约不变，Swift 侧一行没改。地址由
@@ -19,7 +22,9 @@ IPv4 地址上开第二个 listener，供手机 H5 面使用。开关是 `-mobil
 手机通过**设备配对**进入，没有「扫码即登录」这条路，也不存在从 bearer token 直接换手机
 会话的接口。流程是：Mac 的「已配对设备」页发起配对 → 手机扫码打开 `/pair`（服务端直出的
 独立页面，不走 SPA，因为此时手机还没有任何凭据）→ **手机上显示 6 位配对码** → 在 Mac 上
-输入该码 → 绑定完成，手机才拿到长期 device cookie。
+输入该码 → 绑定完成，手机才拿到长期 device cookie，并自动跳转到手机控制面。以后同一台
+手机可直接打开该页显示的局域网地址（建议收藏或添加到主屏幕）；未持有已绑定 cookie 的设备
+只能看到未认证页面，不能读取 API 数据。
 
 这个顺序是有意的：二维码是 bearer secret，被拍照或投屏即等于泄漏，所以扫码本身必须什么都
 不给。`/pair` 只做三件事：一次性认领（第二个扫码的人拿不到配对码）、发一个不能认证任何

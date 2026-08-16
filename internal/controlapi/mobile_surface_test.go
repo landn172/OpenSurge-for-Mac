@@ -95,6 +95,7 @@ func TestHighBlastRadiusRoutesStayFullAuthority(t *testing.T) {
 		"POST /api/v1/network/dhcp-probe",
 		"POST /api/v1/local-routing",
 		"POST /api/v1/recovery",
+		"PUT /api/v1/mobile-access",
 	}
 	for _, route := range mustBeFull {
 		if readOnlySet[route] {

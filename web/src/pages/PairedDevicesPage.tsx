@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, RequestError } from '../api'
-import type { PairedDevice, Pairing } from '../types'
+import type { MobileAccess, NetworkInterfaceOption, PairedDevice, Pairing } from '../types'
 import { Empty, PageHeader } from '../components/Common'
 
 /**
@@ -14,20 +14,43 @@ import { Empty, PageHeader } from '../components/Common'
  */
 export function PairedDevicesPage() {
   const [devices, setDevices] = useState<PairedDevice[] | null>(null)
-  const [mobileEnabled, setMobileEnabled] = useState(true)
+  const [mobileAccess, setMobileAccess] = useState<MobileAccess | null>(null)
+  const [interfaces, setInterfaces] = useState<NetworkInterfaceOption[]>([])
+  const [selectedInterface, setSelectedInterface] = useState('')
+  const [updatingMobileAccess, setUpdatingMobileAccess] = useState(false)
   const [error, setError] = useState('')
 
   const refresh = useCallback(async () => {
     try {
-      const list = await api.pairedDevices()
+      const [list, interfaceResponse] = await Promise.all([api.pairedDevices(), api.networkInterfaces()])
       setDevices(list.devices)
-      setMobileEnabled(list.mobile_enabled)
+      setMobileAccess(list.mobile_access)
+      setInterfaces(interfaceResponse.interfaces)
+      setSelectedInterface(current => list.mobile_access.interface || current || interfaceResponse.interfaces[0]?.interface || '')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
+
+  const updateMobileAccess = async (enabled: boolean) => {
+    if (enabled && !selectedInterface) {
+      setError('请选择手机所在局域网使用的网络接口。')
+      return
+    }
+    setUpdatingMobileAccess(true)
+    setError('')
+    try {
+      const updated = await api.setMobileAccess(enabled, selectedInterface)
+      setMobileAccess(updated)
+      if (updated.interface) setSelectedInterface(updated.interface)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setUpdatingMobileAccess(false)
+    }
+  }
 
   return <>
     <PageHeader
@@ -38,12 +61,27 @@ export function PairedDevicesPage() {
 
     {error && <div className="notice warn">{error}</div>}
 
-    {!mobileEnabled
-      ? <div className="notice warn">
-          这台 Mac 上的控制面目前只监听回环地址，手机还连不上。
-          需要在 Control Service 启动参数里加上 <code>--mobile-interface &lt;接口名&gt;</code>（例如 <code>en0</code>）后重启它。
-        </div>
-      : <PairingPanel onPaired={refresh} />}
+    <section className="section mobile-access-panel">
+      <div>
+        <h2>手机控制面</h2>
+        <p className="pair-lead">仅向所选上游局域网开放只读手机面；手机不能启停网关、修改网络或导入订阅。</p>
+      </div>
+      <div className="mobile-access-controls">
+        <label>
+          <span>手机所在网络接口</span>
+          <select value={selectedInterface} onChange={event => setSelectedInterface(event.target.value)} disabled={updatingMobileAccess || mobileAccess?.enabled}>
+            <option value="">选择接口</option>
+            {interfaces.map(item => <option key={item.interface} value={item.interface}>{item.network_service}（{item.interface}）</option>)}
+          </select>
+        </label>
+        <button type="button" className={mobileAccess?.enabled ? 'mobile-switch on' : 'mobile-switch'} role="switch" aria-checked={mobileAccess?.enabled ?? false} disabled={updatingMobileAccess} onClick={() => void updateMobileAccess(!(mobileAccess?.enabled ?? false))}>
+          <span aria-hidden="true" />{updatingMobileAccess ? '应用中…' : mobileAccess?.enabled ? '已开启' : '开启手机访问'}
+        </button>
+      </div>
+      {mobileAccess?.enabled && mobileAccess.base_url && <p className="pair-hint mobile-access-url">已在 <code>{mobileAccess.base_url}</code> 开放。手机绑定完成后会自动进入控制面；以后也可在同一台手机浏览器打开此地址，建议收藏或添加到主屏幕。</p>}
+    </section>
+
+    {mobileAccess?.enabled ? <PairingPanel onPaired={refresh} /> : <div className="notice warn">开启手机访问后，才可以生成二维码并绑定手机。</div>}
 
     <section className="section">
       <h2>设备列表</h2>

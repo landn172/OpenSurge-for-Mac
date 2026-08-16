@@ -224,5 +224,6 @@ export type ConnectivityResponse = {
 }
 
 export type PairedDevice = { id: string; name: string; created_at: string; last_seen_at?: string; last_ip?: string }
-export type PairedDeviceList = { schema_version: number; devices: PairedDevice[]; mobile_enabled: boolean; pair_base_url?: string }
+export type MobileAccess = { schema_version: number; enabled: boolean; interface?: string; address?: string; base_url?: string }
+export type PairedDeviceList = { schema_version: number; devices: PairedDevice[]; mobile_enabled: boolean; pair_base_url?: string; mobile_access: MobileAccess }
 export type Pairing = { schema_version: number; id: string; url: string; state: 'pending' | 'claimed' | 'completed'; expires_at: string; attempts_left: number }

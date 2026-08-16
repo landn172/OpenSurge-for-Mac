@@ -77,8 +77,12 @@ type Server struct {
 	// Mobile (LAN) access. Empty when the Control Service is loopback-only,
 	// which stays the default. See
 	// docs/agent-wiki/sources/decisions/control-plane-lan-exposure.md.
-	lanAddr    string
-	lanBaseURL string
+	mobileMu       sync.RWMutex
+	lanInterface   string
+	lanAddr        string
+	lanBaseURL     string
+	mobileListener net.Listener
+	httpServer     *http.Server
 
 	devices *deviceRegistry
 
@@ -227,6 +231,7 @@ func New(options Options) (*Server, error) {
 		trafficSampler:    newTrafficRateSampler(),
 		token:             token,
 		baseURL:           "http://" + options.Addr,
+		lanInterface:      options.LANInterface,
 		lanAddr:           lanAddr,
 		lanBaseURL:        lanBaseURL,
 		devices:           devices,
@@ -245,8 +250,9 @@ func New(options Options) (*Server, error) {
 // at this address, which is exactly what rebinding needs.
 func (s *Server) allowedHosts() []string {
 	hosts := []string{"127.0.0.1", "localhost"}
-	if s.lanAddr != "" {
-		if host, _, err := net.SplitHostPort(s.lanAddr); err == nil {
+	_, lanAddr, _ := s.mobileAccessSnapshot()
+	if lanAddr != "" {
+		if host, _, err := net.SplitHostPort(lanAddr); err == nil {
 			hosts = append(hosts, host)
 		}
 	}
@@ -259,8 +265,9 @@ func (s *Server) allowedHosts() []string {
 // value against itself and silently void CSRF protection.
 func (s *Server) allowedOrigins() []string {
 	origins := []string{s.baseURL}
-	if s.lanBaseURL != "" {
-		origins = append(origins, s.lanBaseURL)
+	_, _, lanBaseURL := s.mobileAccessSnapshot()
+	if lanBaseURL != "" {
+		origins = append(origins, lanBaseURL)
 	}
 	return origins
 }
@@ -274,7 +281,10 @@ func (s *Server) bootstrapURLFor(path string) string {
 }
 
 // MobileAccessEnabled reports whether a phone-reachable listener exists.
-func (s *Server) MobileAccessEnabled() bool { return s.lanBaseURL != "" }
+func (s *Server) MobileAccessEnabled() bool {
+	_, _, baseURL := s.mobileAccessSnapshot()
+	return baseURL != ""
+}
 
 // There is deliberately no "mint a phone session from a QR" call. A QR is a
 // bearer secret that anyone who photographs the screen holds, so scanning must
@@ -309,6 +319,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/pairings/{id}", s.auth(http.HandlerFunc(s.handlePairingCancel)))
 	mux.Handle("GET /api/v1/paired-devices", s.auth(http.HandlerFunc(s.handlePairedDevices)))
 	mux.Handle("DELETE /api/v1/paired-devices/{id}", s.auth(http.HandlerFunc(s.handlePairedDeviceRevoke)))
+	mux.Handle("PUT /api/v1/mobile-access", s.auth(http.HandlerFunc(s.handleMobileAccess)))
 	mux.Handle("GET /api/v1/overview", s.authRO(http.HandlerFunc(s.handleOverview)))
 	mux.Handle("GET /api/v1/config", s.authRO(http.HandlerFunc(s.handleControlConfig)))
 	mux.Handle("PUT /api/v1/config", s.auth(http.HandlerFunc(s.handleControlConfig)))
@@ -456,12 +467,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Service must still come up on loopback: losing the phone surface is an
 	// inconvenience, losing the menubar app's control plane is an outage.
 	//
-	// This runs before any handler is built or served. lanAddr and lanBaseURL
-	// gate allowedHosts/allowedOrigins -- the only DNS-rebinding defense -- and
-	// are read from request goroutines, so they must reach their final value
-	// before the first request can be accepted. Keep this block ahead of
-	// s.Handler() and of every Serve call; do not move it later.
+	// The Host and Origin allowlists read this state under mobileMu. Set the
+	// initial listener before accepting requests; later user-driven changes use
+	// the same lock and update the listener and allowlists as one transition.
+	httpServer := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	var lanListener net.Listener
+	s.mobileMu.Lock()
+	s.httpServer = httpServer
 	if s.lanAddr != "" {
 		lanListener, err = net.Listen("tcp4", s.lanAddr)
 		if err != nil {
@@ -470,16 +482,12 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.lanAddr = ""
 			s.lanBaseURL = ""
 		} else {
-			defer lanListener.Close()
+			s.mobileListener = lanListener
 		}
 	}
-	httpServer := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	s.mobileMu.Unlock()
 	if lanListener != nil {
-		go func() {
-			if err := httpServer.Serve(lanListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("control API: mobile listener stopped: %v", err)
-			}
-		}()
+		go s.serveMobileListener(httpServer, lanListener)
 	}
 	go func() {
 		<-ctx.Done()
