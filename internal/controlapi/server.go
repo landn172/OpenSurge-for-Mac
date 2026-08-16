@@ -311,6 +311,7 @@ func (s *Server) Handler() http.Handler {
 	// only finished by typing the phone's code on the Mac.
 	mux.HandleFunc("GET /pair", s.handlePairScan)
 	mux.HandleFunc("GET /pair/status", s.handlePairStatus)
+	mux.HandleFunc("GET /pair/complete", s.handlePairComplete)
 	// Managing the whitelist is full authority only: a phone must never be able
 	// to enroll another phone, nor revoke the device that supervises it.
 	mux.Handle("POST /api/v1/pairings", s.auth(http.HandlerFunc(s.handlePairings)))

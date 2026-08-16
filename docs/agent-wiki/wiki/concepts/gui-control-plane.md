@@ -33,7 +33,9 @@ API 的 claim cookie、显示配对码。配对码只存在于手机屏幕上，
 
 白名单落在 `paired-devices.json`（0600），只存 device token 的 SHA-256，不存 token 本身。
 每个请求都查一次注册表，所以在 Mac 上撤销一台设备，它的下一个请求就会 401，不用等任何缓存
-过期。管理白名单的所有路由都是 `s.auth`：手机不能给另一台手机发证，也不能撤销监管它的设备。
+过期。设备 token 只作为完成扫码的浏览器 profile 的 HttpOnly cookie 保存，因此换浏览器、
+无痕窗口或清除站点数据后需要撤销旧记录并重新配对。管理白名单的所有路由都是 `s.auth`：
+手机不能给另一台手机发证，也不能撤销监管它的设备。
 
 浏览器会话有 scope。配对设备与手机会话是 `scopeReadOnly`，Mac 上菜单栏打开的是
 `scopeFull`；bearer token 是原生 launcher 的凭据、从不进浏览器，因此保留完整权限。

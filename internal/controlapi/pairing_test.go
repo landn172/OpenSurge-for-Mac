@@ -103,13 +103,27 @@ func TestPairingHappyPathBindsARevocableDevice(t *testing.T) {
 		t.Fatalf("confirm status=%d body=%s", response.Code, response.Body.String())
 	}
 
-	// Now the phone collects its device token.
+	// The phone observes completion, then performs a top-level navigation which
+	// sets its persistent device credential and enters the SPA.
 	response := pollPairStatus(t, server, id, claim)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"completed"`) {
 		t.Fatalf("phone did not observe completion: status=%d body=%s", response.Code, response.Body.String())
 	}
-	var deviceToken string
 	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == deviceCookieName {
+			t.Fatal("status polling must not issue the device cookie")
+		}
+	}
+	completeRequest := httptest.NewRequest(http.MethodGet, "http://"+testLANIP+":61767/pair/complete?p="+id, nil)
+	completeRequest.Host = testLANIP + ":61767"
+	completeRequest.AddCookie(claim)
+	complete := httptest.NewRecorder()
+	server.handlePairComplete(complete, completeRequest)
+	if complete.Code != http.StatusFound || complete.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("pair completion redirect status=%d location=%q body=%s", complete.Code, complete.Header().Get("Location"), complete.Body.String())
+	}
+	var deviceToken string
+	for _, cookie := range complete.Result().Cookies() {
 		if cookie.Name == deviceCookieName && cookie.Value != "" {
 			deviceToken = cookie.Value
 		}

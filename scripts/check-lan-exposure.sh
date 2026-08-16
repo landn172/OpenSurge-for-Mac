@@ -133,7 +133,9 @@ else
     -d "{\"code\":\"$CODE\",\"name\":\"gate-check phone\"}" \
     "http://127.0.0.1:$PORT/api/v1/pairings/$PAIR_ID/confirm" 2>/dev/null || true
 
-  curl -sS -o /dev/null -b "$PHONE" -c "$PHONE" "http://$LAN_IP:$PORT/pair/status?p=$PAIR_ID" 2>/dev/null || true
+  # Completion is a top-level redirect so mobile browser containers reliably
+  # persist the HttpOnly device credential before entering the SPA.
+  curl -sS -o /dev/null -b "$PHONE" -c "$PHONE" -L "http://$LAN_IP:$PORT/pair/complete?p=$PAIR_ID" 2>/dev/null || true
   grep -q opensurge_device "$PHONE" && pass "phone received a device credential after confirmation" || fail "phone never received a device credential"
 
   code="$(curl -sS -o /dev/null -w '%{http_code}' -b "$PHONE" "http://$LAN_IP:$PORT/api/v1/overview" 2>/dev/null || echo 000)"

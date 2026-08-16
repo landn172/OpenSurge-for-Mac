@@ -272,8 +272,11 @@ func (s *Server) handlePairScan(w http.ResponseWriter, r *http.Request) {
 	renderPairPage(w, http.StatusOK, pairPageData{Code: code, PairingID: id})
 }
 
-// handlePairStatus is polled by the phone. Once the Mac confirms, this is where
-// the device token is handed over and becomes a cookie.
+// handlePairStatus is polled by the phone while the Mac operator enters the
+// code. The final credential handoff deliberately happens through
+// handlePairComplete as a top-level browser navigation instead of a fetch
+// response. Some mobile in-app browsers do not reliably retain an HttpOnly
+// cookie written by a background fetch immediately before a JS redirect.
 func (s *Server) handlePairStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("p")
 	cookie, err := r.Cookie(pairClaimCookie)
@@ -284,13 +287,8 @@ func (s *Server) handlePairStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	pairing, ok := s.pairings[id]
 	state := pairingPending
-	token := ""
 	if ok && secureEqual(cookie.Value, pairing.claimant) {
 		state = pairing.state
-		if state == pairingCompleted {
-			token = pairing.token
-			delete(s.pairings, id)
-		}
 	} else {
 		ok = false
 	}
@@ -299,19 +297,48 @@ func (s *Server) handlePairStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pairing_not_found", "pairing is unknown, cancelled or expired")
 		return
 	}
-	if token != "" {
-		http.SetCookie(w, &http.Cookie{
-			Name:     deviceCookieName,
-			Value:    token,
-			Path:     "/",
-			Expires:  time.Now().Add(pairedDeviceCookieTTL),
-			MaxAge:   int(pairedDeviceCookieTTL / time.Second),
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
-		})
-		http.SetCookie(w, &http.Cookie{Name: pairClaimCookie, Value: "", Path: "/", MaxAge: -1})
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"schema_version": SchemaVersion, "state": string(state)})
+}
+
+// handlePairComplete hands the device credential to the phone and immediately
+// redirects into the SPA. Keeping Set-Cookie and the navigation in one
+// top-level response makes the post-pairing login work consistently in mobile
+// browser containers as well as Safari and Chrome.
+func (s *Server) handlePairComplete(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("p")
+	cookie, err := r.Cookie(pairClaimCookie)
+	if err != nil {
+		renderPairPage(w, http.StatusUnauthorized, pairPageData{Error: "这台浏览器没有配对凭据。请在 Mac 上重新生成二维码后，用当前浏览器扫码。"})
+		return
+	}
+
+	s.mu.Lock()
+	pairing, ok := s.pairings[id]
+	if ok && time.Now().After(pairing.expires) {
+		delete(s.pairings, id)
+		ok = false
+	}
+	if !ok || !secureEqual(cookie.Value, pairing.claimant) || pairing.state != pairingCompleted || pairing.token == "" {
+		s.mu.Unlock()
+		renderPairPage(w, http.StatusConflict, pairPageData{Error: "配对尚未完成或已失效。请返回 Mac 上的“已配对设备”页面重新开始。"})
+		return
+	}
+	token := pairing.token
+	delete(s.pairings, id)
+	s.mu.Unlock()
+
+	now := time.Now()
+	http.SetCookie(w, &http.Cookie{
+		Name:     deviceCookieName,
+		Value:    token,
+		Path:     "/",
+		Expires:  now.Add(pairedDeviceCookieTTL),
+		MaxAge:   int(pairedDeviceCookieTTL / time.Second),
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{Name: pairClaimCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
 type pairPageData struct {
@@ -360,7 +387,7 @@ p{margin:0;color:oklch(61.4% .027 170.4);font-size:13px}
       const d=await r.json();
       if(d.state==='completed'){
         document.getElementById('status').innerHTML='<div class="done">绑定完成，正在进入…</div>';
-        setTimeout(()=>location.href='/dashboard',600);return
+        setTimeout(()=>location.replace('/pair/complete?p='+encodeURIComponent(id)),600);return
       }
     }catch(e){}
     setTimeout(poll,1500)
