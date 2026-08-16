@@ -96,6 +96,23 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
     if (config?.gateway.mode !== mode) selectMode(mode)
   }
 
+  const applyNetworkDefaults = async () => {
+    if (!config || (config.gateway.mode !== 'same_lan' && config.gateway.mode !== 'same_wifi_dhcp')) return
+    setBusy(true); setError(''); setMessage('')
+    try {
+      const defaults = await api.networkDefaults(config.gateway.mode)
+      setConfig(currentConfig => !currentConfig ? currentConfig : {
+        ...currentConfig,
+        gateway: { ...currentConfig.gateway, interface: defaults.snapshot.interface || currentConfig.gateway.interface, upstream_interface: defaults.snapshot.interface || currentConfig.gateway.upstream_interface, lan_ip: defaults.gateway_ipv4 || currentConfig.gateway.lan_ip },
+        dns: { ...currentConfig.dns, listen: defaults.gateway_ipv4 || currentConfig.dns.listen },
+        dhcp: { ...currentConfig.dhcp, range_start: defaults.dhcp_range_start || currentConfig.dhcp.range_start, range_end: defaults.dhcp_range_end || currentConfig.dhcp.range_end },
+      })
+      const notices = [...defaults.warnings, ...defaults.blockers]
+      setMessage(notices.length ? `已填写当前网络建议；${notices.join('；')}` : '已按当前默认网络填写建议值；仍需检查后保存。')
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setBusy(false) }
+  }
+
   const persistConfig = async (target: ControlConfig, migration?: PolicyMigration) => {
     setBusy(true); setError(''); setMessage('')
     let policySaved = false
@@ -285,6 +302,7 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
         <SectionTitle title="Desired 网络配置" subtitle={`这是下次启动要使用的目标值；保存本身不会切换网络。revision ${config.revision.slice(0, 12)}`} />
         <fieldset disabled={!configurationEditable} style={{ border: 0, margin: 0, minWidth: 0, padding: 0 }}>
           <div className="network-config-guide"><strong>填写顺序</strong><p>先选择上方网络模式，再填写接口与 IPv4。Mac 网关 IPv4 同时也是下游 DNS 的监听地址。保存不会立即改动网络；保存后的配置会在启动网关时应用。恢复资料已准备但网络尚未改动时仍可修正配置，保存后会从第 1 步重新开始。</p></div>
+          {(config.gateway.mode === 'same_lan' || config.gateway.mode === 'same_wifi_dhcp') && <div className="notice"><strong>首次填写？</strong> OpenSurge 可以读取当前默认网络并填入建议值；这只会更新本页草稿，仍需检查并保存。 <button type="button" className="ghost-action" disabled={busy} onClick={() => void applyNetworkDefaults()}>按当前网络填写建议</button></div>}
           <datalist id="network-interface-options">
             {interfaceOptions.map(option => <option key={`${option.interface}:${option.network_service}`} value={option.interface} label={`${option.network_service} · ${option.interface}`} />)}
           </datalist>

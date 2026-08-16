@@ -37,10 +37,33 @@ type Overview struct {
 	StatusError          string                   `json:"status_error,omitempty"`
 	Doctor               []doctor.Check           `json:"doctor"`
 	DoctorHealthy        bool                     `json:"doctor_healthy"`
+	DoctorStatus         DoctorRunStatus          `json:"doctor_status"`
+	MihomoRecovery       MihomoRecoveryStatus     `json:"mihomo_recovery"`
 	Leases               []device.Client          `json:"leases"`
 	Policies             []mihomo.ProxyGroup      `json:"policies"`
 	Providers            mihomo.ProvidersSnapshot `json:"providers"`
 	Recovery             RecoveryState            `json:"recovery"`
+}
+
+type MihomoRecoveryStatus struct {
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// DoctorRunStatus is a process-local, single-flight report. Doctor is
+// deliberately explicit so polling overview, the menu bar, or the paired
+// mobile surface never starts expensive diagnostics.
+type DoctorRunStatus struct {
+	SchemaVersion int            `json:"schema_version"`
+	State         string         `json:"state"`
+	Revision      string         `json:"revision,omitempty"`
+	Current       bool           `json:"current"`
+	Checks        []doctor.Check `json:"checks"`
+	Healthy       bool           `json:"healthy"`
+	Error         string         `json:"error,omitempty"`
+	StartedAt     *time.Time     `json:"started_at,omitempty"`
+	CompletedAt   *time.Time     `json:"completed_at,omitempty"`
 }
 
 type MenuBarStatus struct {
@@ -105,6 +128,19 @@ type NetworkActionResponse struct {
 type NetworkInterfacesResponse struct {
 	SchemaVersion int                            `json:"schema_version"`
 	Interfaces    []macosnetwork.InterfaceOption `json:"interfaces"`
+}
+
+// NetworkDefaultsResponse contains suggestions only. It never persists a
+// configuration or changes host networking.
+type NetworkDefaultsResponse struct {
+	SchemaVersion  int                   `json:"schema_version"`
+	Mode           string                `json:"mode"`
+	Snapshot       macosnetwork.Snapshot `json:"snapshot"`
+	GatewayIPv4    string                `json:"gateway_ipv4"`
+	DHCPRangeStart string                `json:"dhcp_range_start,omitempty"`
+	DHCPRangeEnd   string                `json:"dhcp_range_end,omitempty"`
+	Warnings       []string              `json:"warnings"`
+	Blockers       []string              `json:"blockers"`
 }
 
 type ManualRecoveryFinishRequest struct {
@@ -221,6 +257,16 @@ type Source struct {
 	Applied       bool            `json:"applied"`
 	Versions      []SourceVersion `json:"versions"`
 	Diff          SourceDiff      `json:"diff"`
+}
+
+// SourceSnapshotFile describes a managed source snapshot or a user-owned
+// editable export. The full path is returned only to authenticated local users.
+type SourceSnapshotFile struct {
+	SchemaVersion int    `json:"schema_version"`
+	SourceID      string `json:"source_id"`
+	Kind          string `json:"kind"`
+	Path          string `json:"path"`
+	DisplayPath   string `json:"display_path"`
 }
 
 type SourceVersion struct {

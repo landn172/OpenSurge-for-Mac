@@ -40,11 +40,13 @@ type Options struct {
 	NetworkRunner     NetworkRunner
 	ConfigRunner      ConfigurationRunner
 	DiscoverNetwork   func(context.Context, string, string) (macosnetwork.Snapshot, error)
+	DiscoverDefault   func(context.Context) (macosnetwork.Snapshot, error)
 	ListInterfaces    func(context.Context) ([]macosnetwork.InterfaceOption, error)
 	DiscoverNeighbors func(context.Context, string) ([]macosnetwork.Neighbor, error)
 	PingRouter        func(context.Context, string) error
 	Static            http.Handler
 	Credentials       SourceCredentialStore
+	RevealInFinder    func(context.Context, string) error
 	// LANInterface enables the mobile (H5) surface by adding a second listener
 	// on this interface's current IPv4 address. Empty keeps the service
 	// loopback-only, which is the default and what the shipped plist does.
@@ -59,11 +61,13 @@ type Server struct {
 	networkRunner     NetworkRunner
 	configRunner      ConfigurationRunner
 	discoverNetwork   func(context.Context, string, string) (macosnetwork.Snapshot, error)
+	discoverDefault   func(context.Context) (macosnetwork.Snapshot, error)
 	listInterfaces    func(context.Context) ([]macosnetwork.InterfaceOption, error)
 	discoverNeighbors func(context.Context, string) ([]macosnetwork.Neighbor, error)
 	pingRouter        func(context.Context, string) error
 	static            http.Handler
 	credentials       SourceCredentialStore
+	revealInFinder    func(context.Context, string) error
 	fetchConnections  func(context.Context, config.Config) (mihomo.ConnectionsSnapshot, error)
 	fetchProxyHealth  func(context.Context, config.Config) (mihomo.ProxyHealthSnapshot, error)
 	fetchLocalRouting func(context.Context, config.Config) (mihomo.LocalRoutingSnapshot, error)
@@ -71,6 +75,7 @@ type Server struct {
 	measureProxyDelay func(context.Context, config.Config, string, string, time.Duration) mihomo.ProxyDelayResult
 	probeConnectivity func(context.Context, config.Config, ConnectivityTarget) ConnectivityResult
 	trafficSampler    *trafficRateSampler
+	doctor            *doctorController
 	token             string
 	baseURL           string
 
@@ -85,6 +90,9 @@ type Server struct {
 	httpServer     *http.Server
 
 	devices *deviceRegistry
+
+	lifecycleMu    sync.Mutex
+	mihomoRecovery *mihomoRecoveryController
 
 	mu         sync.Mutex
 	sessions   map[string]webSession
@@ -184,6 +192,9 @@ func New(options Options) (*Server, error) {
 	if options.DiscoverNetwork == nil {
 		options.DiscoverNetwork = macosnetwork.Discover
 	}
+	if options.DiscoverDefault == nil {
+		options.DiscoverDefault = macosnetwork.DiscoverDefault
+	}
 	if options.ListInterfaces == nil {
 		options.ListInterfaces = macosnetwork.ListInterfaces
 	}
@@ -205,6 +216,9 @@ func New(options Options) (*Server, error) {
 	} else if err := migrateSourceCredentials(context.Background(), store, options.Credentials); err != nil {
 		return nil, err
 	}
+	if options.RevealInFinder == nil {
+		options.RevealInFinder = revealPathInFinder
+	}
 	devices, err := newDeviceRegistry(options.StoreDir)
 	if err != nil {
 		return nil, err
@@ -217,11 +231,13 @@ func New(options Options) (*Server, error) {
 		networkRunner:     options.NetworkRunner,
 		configRunner:      options.ConfigRunner,
 		discoverNetwork:   options.DiscoverNetwork,
+		discoverDefault:   options.DiscoverDefault,
 		listInterfaces:    options.ListInterfaces,
 		discoverNeighbors: options.DiscoverNeighbors,
 		pingRouter:        options.PingRouter,
 		static:            options.Static,
 		credentials:       options.Credentials,
+		revealInFinder:    options.RevealInFinder,
 		fetchConnections:  mihomo.FetchConnections,
 		fetchProxyHealth:  mihomo.FetchProxyHealth,
 		fetchLocalRouting: mihomo.FetchLocalRouting,
@@ -229,12 +245,14 @@ func New(options Options) (*Server, error) {
 		measureProxyDelay: mihomo.MeasureProxyDelay,
 		probeConnectivity: probeConnectivityTarget,
 		trafficSampler:    newTrafficRateSampler(),
+		doctor:            newDoctorController(doctor.Run),
 		token:             token,
 		baseURL:           "http://" + options.Addr,
 		lanInterface:      options.LANInterface,
 		lanAddr:           lanAddr,
 		lanBaseURL:        lanBaseURL,
 		devices:           devices,
+		mihomoRecovery:    newMihomoRecoveryController(),
 		sessions:          map[string]webSession{},
 		bootstraps:        map[string]bootstrapGrant{},
 		pairings:          map[string]*pendingPairing{},
@@ -343,6 +361,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/recovery/client-validation-skip", s.auth(http.HandlerFunc(s.handleClientValidationSkip)))
 	mux.Handle("POST /api/v1/recovery/keep-static", s.auth(http.HandlerFunc(s.handleKeepStaticFinish)))
 	mux.Handle("GET /api/v1/network/discovery", s.authRO(http.HandlerFunc(s.handleNetworkDiscovery)))
+	mux.Handle("GET /api/v1/network/defaults", s.auth(http.HandlerFunc(s.handleNetworkDefaults)))
 	mux.Handle("GET /api/v1/network/interfaces", s.authRO(http.HandlerFunc(s.handleNetworkInterfaces)))
 	mux.Handle("POST /api/v1/network/apply-static", s.auth(http.HandlerFunc(s.handleApplyStatic)))
 	mux.Handle("POST /api/v1/network/dhcp-probe", s.auth(http.HandlerFunc(s.handleDHCPProbe)))
@@ -351,6 +370,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/sources", s.auth(http.HandlerFunc(s.handleSources)))
 	mux.Handle("POST /api/v1/sources/{id}/refresh", s.auth(http.HandlerFunc(s.handleSourceRefresh)))
 	mux.Handle("POST /api/v1/sources/{id}/apply", s.auth(http.HandlerFunc(s.handleSourceApply)))
+	mux.Handle("GET /api/v1/sources/{id}/snapshot-location", s.auth(http.HandlerFunc(s.handleSourceSnapshotLocation)))
+	mux.Handle("POST /api/v1/sources/{id}/reveal", s.auth(http.HandlerFunc(s.handleSourceReveal)))
+	mux.Handle("POST /api/v1/sources/{id}/export", s.auth(http.HandlerFunc(s.handleSourceExport)))
 	mux.Handle("GET /api/v1/device-policy", s.authRO(http.HandlerFunc(s.handleDevicePolicy)))
 	mux.Handle("PUT /api/v1/device-policy", s.auth(http.HandlerFunc(s.handleDevicePolicy)))
 	mux.Handle("GET /api/v1/devices", s.authRO(http.HandlerFunc(s.handleDevices)))
@@ -365,6 +387,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/connectivity", s.authRO(http.HandlerFunc(s.handleConnectivity)))
 	mux.Handle("POST /api/v1/connectivity/tests", s.authRO(http.HandlerFunc(s.handleConnectivityTests)))
 	mux.Handle("GET /api/v1/providers", s.authRO(http.HandlerFunc(s.handleProviders)))
+	mux.Handle("GET /api/v1/doctor", s.authRO(http.HandlerFunc(s.handleDoctor)))
+	// Starting an expensive diagnostic job is an operator action. The mobile
+	// surface remains read-only even though it may observe the resulting status.
+	mux.Handle("POST /api/v1/doctor", s.auth(http.HandlerFunc(s.handleDoctor)))
 	mux.Handle("GET /api/v1/diagnostics", s.authRO(http.HandlerFunc(s.handleDiagnostics)))
 	mux.Handle("POST /api/v1/providers/{name}/refresh", s.auth(http.HandlerFunc(s.handleProviderRefresh)))
 	mux.Handle("GET /api/v1/operations/{id}", s.authRO(http.HandlerFunc(s.handleOperation)))
@@ -496,6 +522,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
+	go s.monitorMihomoRecovery(ctx)
 	err = httpServer.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -666,8 +693,8 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 func (s *Server) overview(ctx context.Context) (Overview, error) {
 	state := s.gatewayState(ctx)
 	cfg := state.cfg
-	report := doctor.Run(cfg)
-	controlDoctorChecks := doctorChecksForControl(report.Checks)
+	doctorStatus := s.doctor.snapshot(s.currentDoctorRevision())
+	controlDoctorChecks, controlDoctorHealthy := doctorOverviewResult(doctorStatus)
 	leases, _ := device.LoadLeases(state.paths.LeaseFile)
 	if leases == nil {
 		leases = []device.Client{}
@@ -720,7 +747,9 @@ func (s *Server) overview(ctx context.Context) (Overview, error) {
 		Status:               state.status,
 		StatusError:          errorString(state.statusErr),
 		Doctor:               controlDoctorChecks,
-		DoctorHealthy:        doctorHealthyForControl(controlDoctorChecks),
+		DoctorHealthy:        controlDoctorHealthy,
+		DoctorStatus:         doctorStatus,
+		MihomoRecovery:       s.mihomoRecovery.snapshot(),
 		Leases:               leases,
 		Policies:             groups,
 		Providers:            providers,
@@ -872,6 +901,12 @@ func (s *Server) handleGatewayAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runOperation(op Operation, topology string, recoveryBefore RecoveryState) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.runOperationCore(op, topology, recoveryBefore)
+}
+
+func (s *Server) runOperationCore(op Operation, topology string, recoveryBefore RecoveryState) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	err := s.runner.Run(ctx, op.Kind, s.configPath)
@@ -1160,6 +1195,37 @@ func (s *Server) handleNetworkDiscovery(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) handleNetworkDefaults(w http.ResponseWriter, r *http.Request) {
+	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
+	if mode != config.GatewayModeSameLAN && mode != config.GatewayModeSameWiFiDHCP {
+		writeError(w, http.StatusBadRequest, "network_defaults_mode_unsupported", "automatic network defaults are only available for bypass-router and same-LAN DHCP takeover modes")
+		return
+	}
+	cfg, err := config.Load(s.configPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "config_invalid", err.Error())
+		return
+	}
+	snapshot, err := s.discoverDefault(r.Context())
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "network_defaults_discovery_failed", err.Error())
+		return
+	}
+	result := NetworkDefaultsResponse{SchemaVersion: SchemaVersion, Mode: mode, Snapshot: snapshot, GatewayIPv4: snapshot.IPv4, Warnings: []string{}, Blockers: []string{}}
+	if mode == config.GatewayModeSameLAN && snapshot.IPv4Mode == macosnetwork.IPv4ModeDHCP {
+		result.Warnings = append(result.Warnings, "当前 Mac IPv4 由主路由 DHCP 分配；旁路由长期使用时建议在主路由中保留该地址")
+	}
+	if mode == config.GatewayModeSameWiFiDHCP {
+		start, end, rangeErr := suggestDHCPRange24(snapshot, cfg.DevicePolicy.ProtectedIPv4)
+		if rangeErr != nil {
+			result.Blockers = append(result.Blockers, rangeErr.Error())
+		} else {
+			result.DHCPRangeStart, result.DHCPRangeEnd = start, end
+		}
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleNetworkInterfaces(w http.ResponseWriter, r *http.Request) {
@@ -1790,6 +1856,81 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	providers = mihomo.VisibleProviders(providers)
 	writeJSON(w, http.StatusOK, map[string]any{"schema_version": SchemaVersion, "providers": providers})
+}
+
+func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		status := s.doctor.snapshot("")
+		if status.State == doctorRunIdle || status.State == doctorRunRunning {
+			writeJSON(w, http.StatusOK, s.doctor.snapshot(status.Revision))
+			return
+		}
+		writeJSON(w, http.StatusOK, s.doctor.snapshot(s.currentDoctorRevision()))
+		return
+	}
+	status := s.doctor.snapshot("")
+	if status.State == doctorRunRunning {
+		writeJSON(w, http.StatusAccepted, s.doctor.snapshot(status.Revision))
+		return
+	}
+	revision := fileDigest(s.configPath)
+	if revision == "" {
+		writeError(w, http.StatusBadRequest, "config_invalid", "configuration file is unavailable")
+		return
+	}
+	cfg, err := config.Load(s.configPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "config_invalid", err.Error())
+		return
+	}
+	if revision != fileDigest(s.configPath) {
+		writeError(w, http.StatusConflict, "revision_conflict", "configuration changed while Doctor was starting; retry the check")
+		return
+	}
+	digest := ""
+	if cfg.DevicePolicy.Bundle != nil {
+		digest = cfg.DevicePolicy.Bundle.Digest
+	}
+	profileDigest, profileErr := config.MihomoProfileDigest(cfg)
+	status, _ = s.doctor.start(cfg, doctorInputRevision(revision, digest, profileDigest, errorString(profileErr)))
+	writeJSON(w, http.StatusAccepted, status)
+}
+
+func (s *Server) currentDoctorRevision() string {
+	configRevision := fileDigest(s.configPath)
+	cfg, err := config.Load(s.configPath)
+	if err != nil {
+		return doctorInputRevision(configRevision, "", "", err.Error())
+	}
+	digest := ""
+	if cfg.DevicePolicy.Bundle != nil {
+		digest = cfg.DevicePolicy.Bundle.Digest
+	}
+	profileDigest, profileErr := config.MihomoProfileDigest(cfg)
+	return doctorInputRevision(configRevision, digest, profileDigest, errorString(profileErr))
+}
+
+func doctorInputRevision(configRevision, deviceDigest, profileDigest, profileError string) string {
+	digest := sha256.New()
+	for _, value := range []string{configRevision, deviceDigest, profileDigest, profileError} {
+		_, _ = digest.Write([]byte(value))
+		_, _ = digest.Write([]byte{0})
+	}
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
+func doctorOverviewResult(status DoctorRunStatus) ([]doctor.Check, bool) {
+	if !status.Current {
+		return []doctor.Check{}, true
+	}
+	switch status.State {
+	case doctorRunSucceeded:
+		return append([]doctor.Check{}, status.Checks...), status.Healthy
+	case doctorRunFailed:
+		return []doctor.Check{}, false
+	default:
+		return []doctor.Check{}, true
+	}
 }
 
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {

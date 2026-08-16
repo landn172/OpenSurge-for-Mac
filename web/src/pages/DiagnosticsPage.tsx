@@ -4,7 +4,7 @@ import { Empty, PageHeader, StatusDot } from '../components/Common'
 import { recoveryLabel } from '../recovery'
 import { statusLabel } from '../status'
 import { formatBytes } from '../trafficFormat'
-import type { Diagnostics, DoctorCheck, Overview } from '../types'
+import type { Diagnostics, DoctorCheck, DoctorRunStatus, Overview } from '../types'
 
 type EvidenceTab = 'connections' | 'logs' | 'operations' | 'providers'
 
@@ -24,6 +24,7 @@ const connectionDisplayLimit = 100
 // slowly enough that a slower tick keeps them honest without the extra load.
 const connectionsRefreshMs = 2_000
 const evidenceRefreshMs = 5_000
+const doctorPollMs = 500
 
 export function DiagnosticsPage({ overview }: { overview: Overview | null }) {
   const [details, setDetails] = useState<Diagnostics | null>(null)
@@ -33,6 +34,9 @@ export function DiagnosticsPage({ overview }: { overview: Overview | null }) {
   const [tab, setTab] = useState<EvidenceTab>('connections')
   const [logSource, setLogSource] = useState('')
   const [copied, setCopied] = useState('')
+  const [doctorStatus, setDoctorStatus] = useState<DoctorRunStatus | null>(null)
+  const [doctorError, setDoctorError] = useState('')
+  const mobileReadOnly = window.location.hostname !== '127.0.0.1' && window.location.hostname !== 'localhost'
   const mounted = useRef(true)
   const requestID = useRef(0)
 
@@ -67,6 +71,24 @@ export function DiagnosticsPage({ overview }: { overview: Overview | null }) {
 
   useEffect(() => { void load() }, [load, overview?.revision, overview?.status.gateway])
 
+  useEffect(() => {
+    let active = true
+    // Older embedded Web UI test harnesses can supply a partial API object.
+    // A missing optional diagnostics endpoint must not break evidence polling.
+    if (typeof api.doctorStatus !== 'function') return () => { active = false }
+    void api.doctorStatus().then(value => { if (active) { setDoctorStatus(value); setDoctorError('') } }).catch(cause => { if (active) setDoctorError(cause instanceof Error ? cause.message : String(cause)) })
+    return () => { active = false }
+  }, [overview?.revision])
+
+  useEffect(() => {
+    if (doctorStatus?.state !== 'running') return
+    let active = true
+    const timer = window.setInterval(() => {
+      void api.doctorStatus().then(value => { if (active) { setDoctorStatus(value); setDoctorError('') } }).catch(cause => { if (active) setDoctorError(cause instanceof Error ? cause.message : String(cause)) })
+    }, doctorPollMs)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [doctorStatus?.state])
+
   // Evidence is a live view, not a snapshot taken when the page opened. Polling
   // stops while the window is hidden so a backgrounded GUI stops driving
   // mihomo's API and the runtime log reads.
@@ -99,7 +121,7 @@ export function DiagnosticsPage({ overview }: { overview: Overview | null }) {
     }
   }, [load, tab])
 
-  const doctor = overview?.doctor ?? []
+  const doctor = doctorStatus?.checks ?? []
   const failures = doctor.filter(check => !check.ok)
   const orderedDoctor = [...failures, ...doctor.filter(check => check.ok)]
   const providers = overview?.providers.proxy_providers ?? []
@@ -138,6 +160,12 @@ export function DiagnosticsPage({ overview }: { overview: Overview | null }) {
     }
   }
 
+  const runDoctor = async () => {
+    if (typeof api.runDoctor !== 'function') return
+    try { setDoctorError(''); setDoctorStatus(await api.runDoctor()) }
+    catch (cause) { setDoctorError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
   return <>
     <PageHeader
       eyebrow="DIAGNOSTICS"
@@ -147,6 +175,7 @@ export function DiagnosticsPage({ overview }: { overview: Overview | null }) {
     />
 
     <div className="diagnostics-workbench">
+      {overview?.mihomo_recovery?.state && overview.mihomo_recovery.state !== 'idle' && <div className={`notice ${overview.mihomo_recovery.state === 'failed' ? 'warn' : ''}`} role="status">Mihomo 自动恢复：{overview.mihomo_recovery.state === 'observing' ? '正在确认异常' : overview.mihomo_recovery.state === 'recovering' ? '已启动一次恢复，正在确认健康状态' : `恢复失败，请在连通性或网络页手动处理。${overview.mihomo_recovery.error ? ` ${overview.mihomo_recovery.error}` : ''}`}</div>}
       <div className="diagnostics-rail">
         <article className={`diagnostics-verdict ${failures.length ? 'attention' : ''}`} aria-label="诊断结论">
           <span className="verdict-orb" aria-hidden="true">{failures.length ? '!' : '✓'}</span>
@@ -161,7 +190,12 @@ export function DiagnosticsPage({ overview }: { overview: Overview | null }) {
         </article>
 
         <section className="section">
-          <div className="rail-head"><h2>Doctor</h2><span className={`pill ${failures.length ? 'bad' : 'ok'}`}>{failures.length ? `${failures.length} 项待处理` : `${doctor.length} 项通过`}</span></div>
+          <div className="rail-head"><h2>Doctor</h2><span className={`pill ${failures.length ? 'bad' : 'ok'}`}>{doctorStatus?.state === 'running' ? '检查中' : failures.length ? `${failures.length} 项待处理` : `${doctor.length} 项通过`}</span></div>
+          <p className="muted">完整 Doctor 只会由本机控制面手动启动，不会阻塞总览、菜单栏或移动端状态刷新。</p>
+          {!mobileReadOnly && <button type="button" className="ghost-action" disabled={doctorStatus?.state === 'running'} onClick={() => void runDoctor()}>{doctorStatus?.state === 'running' ? '后台检查中…' : doctorStatus?.state === 'idle' || !doctorStatus ? '运行 Doctor' : '重新运行 Doctor'}</button>}
+          {doctorError && <div className="notice warn" role="alert">Doctor 状态不可用：{doctorError}</div>}
+          {doctorStatus?.state === 'failed' && <div className="notice warn" role="alert">Doctor 后台任务失败：{doctorStatus.error || '未知错误'}</div>}
+          {!doctorStatus?.current && doctor.length > 0 && <div className="notice">配置已变化；以下 Doctor 结果属于旧版本，请重新运行。</div>}
           {orderedDoctor.length ? <div className="doctor-grid">
             {orderedDoctor.map(check => <div className={`check ${check.ok ? '' : 'bad'}`} key={check.name}>
               <span className={check.ok ? 'ok-mark' : 'bad-mark'} aria-hidden="true">{check.ok ? '✓' : '!'}</span>

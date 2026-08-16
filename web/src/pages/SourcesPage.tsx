@@ -5,7 +5,7 @@ import type { Overview, Source } from '../types'
 
 type SourceAction =
   | { kind: 'import-url' | 'import-file' | 'apply'; sourceID?: string }
-  | { kind: 'refresh'; sourceID: string }
+  | { kind: 'refresh' | 'reveal' | 'export'; sourceID: string }
   | null
 
 export function SourcesPage({ overview, onChanged }: { overview: Overview | null; onChanged: () => void | Promise<void> }) {
@@ -45,7 +45,7 @@ export function SourcesPage({ overview, onChanged }: { overview: Overview | null
     try {
       await operation()
       await refresh()
-      setMessage(successMessage)
+      if (successMessage) setMessage(successMessage)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -130,6 +130,14 @@ export function SourcesPage({ overview, onChanged }: { overview: Overview | null
         refreshing={activeAction?.kind === 'refresh' && activeAction.sourceID === source.id}
         carriesBannerAction={source.id === pendingSource?.id && running}
         onRefresh={() => void run({ kind: 'refresh', sourceID: source.id }, () => api.refreshSource(source.id), `${source.name} 已刷新；新内容已保存为草稿。`)}
+        onReveal={() => void run({ kind: 'reveal', sourceID: source.id }, async () => {
+          const snapshot = await api.revealSource(source.id)
+          setMessage(`已在 Finder 中显示受管理快照：${snapshot.display_path}`)
+        }, '')}
+        onExport={() => void run({ kind: 'export', sourceID: source.id }, async () => {
+          const exported = await api.exportSource(source.id)
+          setMessage(`已导出可编辑副本：${exported.display_path}。修改后请重新按本地文件导入。`)
+        }, '')}
         onApply={() => openApply(source)}
       />)}</div> : <Empty text="尚未导入任何来源" />}
     </section>
@@ -183,7 +191,7 @@ function RunningConfig({ source, pending, running, busy, onApply }: { source: So
   </section>
 }
 
-function SourceCard({ source, running, busy, revision, refreshing, carriesBannerAction, onRefresh, onApply }: {
+function SourceCard({ source, running, busy, revision, refreshing, carriesBannerAction, onRefresh, onReveal, onExport, onApply }: {
   source: Source
   running: boolean
   busy: boolean
@@ -191,6 +199,8 @@ function SourceCard({ source, running, busy, revision, refreshing, carriesBanner
   refreshing: boolean
   carriesBannerAction: boolean
   onRefresh: () => void
+  onReveal: () => void
+  onExport: () => void
   onApply: () => void
 }) {
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -227,6 +237,8 @@ function SourceCard({ source, running, busy, revision, refreshing, carriesBanner
 
     <div className="source-actions">
       {origin.startsWith('https://') && <button type="button" disabled={busy} onClick={onRefresh}><ActionLabel active={refreshing} idle="刷新草稿" pending="正在刷新…" /></button>}
+      <button type="button" disabled={busy} onClick={onReveal}>在 Finder 中显示</button>
+      <button type="button" disabled={busy} onClick={onExport}>导出可编辑副本</button>
       <button
         className={carriesBannerAction ? '' : 'primary'}
         type="button"

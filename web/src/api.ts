@@ -1,4 +1,4 @@
-import type { APIError, MobileAccess, PairedDeviceList, Pairing, ConnectivityResponse, ControlConfig, DevicePolicyDocument, DevicesResponse, DeviceTraffic, Diagnostics, GatewayPlan, LocalRouting, LocalRoutingMode, NetworkInterfacesResponse, Operation, Overview, PolicySet, ProxyGroup, ProxyHealthSnapshot, ProxyHealthTestResponse, Source } from './types'
+import type { APIError, DoctorRunStatus, MobileAccess, PairedDeviceList, Pairing, ConnectivityResponse, ControlConfig, DevicePolicyDocument, DevicesResponse, DeviceTraffic, Diagnostics, GatewayPlan, LocalRouting, LocalRoutingMode, NetworkDefaults, NetworkInterfacesResponse, Operation, Overview, PolicySet, ProxyGroup, ProxyHealthSnapshot, ProxyHealthTestResponse, Source, SourceSnapshotFile } from './types'
 
 export class RequestError extends Error {
   constructor(public status: number, public code: string, message: string) {
@@ -35,6 +35,7 @@ export const api = {
   cancelPairing: (id: string) => request<void>(`/api/v1/pairings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   config: () => request<ControlConfig>('/api/v1/config'),
   networkInterfaces: () => request<NetworkInterfacesResponse>('/api/v1/network/interfaces'),
+  networkDefaults: (mode: 'same_lan' | 'same_wifi_dhcp') => request<NetworkDefaults>(`/api/v1/network/defaults?mode=${encodeURIComponent(mode)}`),
   saveConfig: (config: ControlConfig) => request<ControlConfig>('/api/v1/config', { method: 'PUT', headers: { 'If-Match': `"${config.revision}"` }, body: JSON.stringify(config) }),
   gateway: (action: 'start' | 'stop' | 'reload' | 'restart-mihomo') => request<Operation>(`/api/v1/gateway/${action}`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() } }),
   operation: (id: string) => request<Operation>(`/api/v1/operations/${encodeURIComponent(id)}`),
@@ -62,6 +63,9 @@ export const api = {
   },
   refreshSource: (id: string) => request<Source>(`/api/v1/sources/${id}/refresh`, { method: 'POST' }),
   applySource: (id: string, revision: string) => request<Source>(`/api/v1/sources/${id}/apply`, { method: 'POST', headers: { 'If-Match': `"${revision}"` } }),
+  sourceSnapshotLocation: (id: string) => request<SourceSnapshotFile>(`/api/v1/sources/${encodeURIComponent(id)}/snapshot-location`),
+  revealSource: (id: string) => request<SourceSnapshotFile>(`/api/v1/sources/${encodeURIComponent(id)}/reveal`, { method: 'POST' }),
+  exportSource: (id: string) => request<SourceSnapshotFile>(`/api/v1/sources/${encodeURIComponent(id)}/export`, { method: 'POST' }),
   devices: () => request<DevicesResponse>('/api/v1/devices'),
   deviceTraffic: () => request<DeviceTraffic>('/api/v1/device-traffic'),
   devicePolicy: () => request<DevicePolicyDocument>('/api/v1/device-policy'),
@@ -77,6 +81,8 @@ export const api = {
   testConnectivity: (targetIDs: string[] = []) => request<ConnectivityResponse>('/api/v1/connectivity/tests', { method: 'POST', body: JSON.stringify({ target_ids: targetIDs }) }),
   refreshProvider: (name: string) => request(`/api/v1/providers/${encodeURIComponent(name)}/refresh`, { method: 'POST' }),
   diagnostics: () => request<Diagnostics>('/api/v1/diagnostics'),
+  doctorStatus: () => request<DoctorRunStatus>('/api/v1/doctor'),
+  runDoctor: () => request<DoctorRunStatus>('/api/v1/doctor', { method: 'POST' }),
 }
 
 export async function waitForOperation(id: string, timeoutMs = 180_000): Promise<Operation> {
